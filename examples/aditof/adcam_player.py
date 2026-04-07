@@ -20,6 +20,9 @@
 import argparse
 import ctypes
 import logging
+import os
+import sys
+import time
 
 import adcam
 import cuda.bindings.driver as cuda
@@ -1092,6 +1095,27 @@ def main():
         help="Get status part of debug",
     )
 
+    parser.add_argument(
+        "--FWUpdate",
+        "-FWU",
+        type=int,
+        default=0,
+        required=False,
+        help="Perform firmware update (set to 1)",
+    )
+
+    # Add positional arguments for firmware file and target
+    parser.add_argument(
+        "firmware_file",
+        nargs="?",
+        help="Firmware binary or stream file",
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="Target device: master or slave",
+    )
+
     # Parse arguments
     # args = parser.parse_args()
 
@@ -1155,17 +1179,33 @@ def main():
         hololink_channel, hololink_module.CAM_I2C_BUS, channel_metadata
     )
 
+    if args.capture == 1:
+        # Set up the application
+        application = HoloscanApplication(
+            False,
+            True,
+            cu_context,
+            cu_device_ordinal,
+            hololink_channel,
+            args.ibv_name,
+            args.ibv_port,
+            adcam_inst,
+            args.frame_limit,
+        )
+
     # Establish a connection to the hololink device
     hololink = hololink_channel.hololink()
     hololink.start()
 
     if args.resetAdcam == 1:
         logging.info("Doing the full Reset including power on sequence")
-        adcam_inst.adcam_reset_power_on(hololink, hololink_channel, channel_metadata)
+        #adcam_inst.adcam_reset_power_on(hololink, hololink_channel, channel_metadata)
+        adcam_inst.adcam_reset_power_on()
 
     if args.resetOnly == 1:
         logging.info("Performing ONLY Reset - NOT doing FULL Power on reset")
-        adcam_inst.adcam_Only_reset(hololink, hololink_channel, channel_metadata)
+        #adcam_inst.adcam_Only_reset(hololink, hololink_channel, channel_metadata)
+        adcam_inst.adcam_Only_reset()
 
     # add FW upgrade as well
 
@@ -1179,6 +1219,88 @@ def main():
     if args.getStatus == 1:
         logging.debug("Getting only status")
         adcam_inst.get_status()
+
+    '''
+    adcam_inst.adcam_reset_power_on()
+    #FirstPulsatrixID = adcam_inst.get_ChipID()
+    #print (f"Master Pulsatrix Chip ID = {FirstPulsatrixID}")
+    #print (f"Status after Master Chip ID = {adcam_inst.get_only_status()}")
+    time.sleep(1)
+    GenericResp = adcam_inst.get_generic_resp()
+    print (f"Generic Response 1= {GenericResp}")
+
+    SecondPulsatrixID = adcam_inst.get_second_pulsatrix_ID()
+    print (f"Slave Pulsatrix Chip ID = {SecondPulsatrixID}")
+    print (f"Status after Slave Chip ID = {adcam_inst.get_only_status()}")
+    print ("Trying 2nd time")
+    SecondPulsatrixID = adcam_inst.get_second_pulsatrix_ID()
+    print (f"Slave Pulsatrix Chip ID = {SecondPulsatrixID}")
+    print (f"Status after Slave Chip ID = {adcam_inst.get_only_status()}")
+    
+    GenericResp = adcam_inst.get_generic_resp()
+    print (f"Generic Response 2= {GenericResp}")
+    adcam_inst.burst_mode_on()
+    adcam_inst.get_master_fw_version()
+    adcam_inst.get_slave_fw_version()
+    sys.exit(0)
+    '''
+    # Firmware update section
+    if args.FWUpdate == 1:
+        # Check for required positional arguments
+        if not args.firmware_file or not args.target:
+            print("Usage: python adcamFWUpdate.py --FWUpdate=1 <firmware_bin/firmware_stream> <master/slave>")
+            sys.exit(1)
+
+        target = args.target.lower()
+        firmware_file = args.firmware_file
+        #Initialize buffers and lengths
+        fw_bin_len = 0
+        fw_stream_len = 0
+        bin_buffer = None
+        stream_buffer = None
+        if target == "master":
+            print("Target is Master - Proceeding with .bin update")
+            bin_file_path = firmware_file
+            if not os.path.exists(bin_file_path):
+                print(f"Error: Binary file not found at {bin_file_path}")
+                sys.exit(1)
+            try:
+                with open(bin_file_path, "rb") as fw_bin_file:
+                    bin_buffer = fw_bin_file.read()
+            except IOError as e:
+                print(f"Error opening firmware file: {e}")
+                return False
+            fw_bin_len = len(bin_buffer)
+            print("Binary FW len = ", fw_bin_len)
+        elif target == "slave":
+            print("Target is Slave - Proceeding with .stream update")
+            stream_file_path = firmware_file
+            if not os.path.exists(stream_file_path):
+                print(f"Error: Stream file not found at {stream_file_path}")
+                sys.exit(1)
+            try:
+                with open(stream_file_path, "rb") as fw_stream_file:
+                    stream_buffer = fw_stream_file.read()
+            except IOError as e:
+                print(f"Error opening firmware file: {e}")
+                return False
+            fw_stream_len = len(stream_buffer)
+            print("Stream FW len = ", fw_stream_len)
+        else:
+            print("Error: Second argument must be 'master' or 'slave' (case-insensitive). Current paramater is: ", target)
+            sys.exit(1)
+
+        if target == "master":
+            print(f"Target: Master. Writing {bin_file_path} packets...")
+        else:
+            print(f"Target: Slave. Writing {stream_file_path} packets...")
+
+        FW_Update_result = adcam_inst.perform_FW_update(target, bin_buffer, fw_bin_len, stream_buffer, fw_stream_len)
+        if FW_Update_result:
+            print("Firmware update successful!")
+        else:
+            print("Firmware update failed.")
+        sys.exit(0)
 
     version = adcam_inst.get_fw_version()
     logging.info(f"{version=}")
