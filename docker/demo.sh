@@ -51,6 +51,15 @@ done
 # enableRawReprocess needs to be set 1 if the frame capture is not \
 # done by Argus API and only ISP being used.
 # NOTE that we're currently testing with a value of 2 here.
+# --- FIX 1: Allow local docker containers to access the host X server ---
+if [ -n "$DISPLAY" ]; then
+    xhost +local:docker || true
+fi
+
+# --- FIX 2: Ensure XDG_RUNTIME_DIR has a safe default if empty ---
+if [ -z "$XDG_RUNTIME_DIR" ]; then
+    export XDG_RUNTIME_DIR=/tmp/runtime-root
+fi
 
 docker run \
     -it \
@@ -61,6 +70,7 @@ docker run \
     --shm-size=1gb \
     --privileged \
     --name "$NAME" \
+    --ulimit stack=33554432 \
     -v $PWD:$PWD \
     -v $ROOT:$ROOT \
     -v $HOME:$HOME \
@@ -71,10 +81,12 @@ docker run \
     -v /tmp/argus_socket:/tmp/argus_socket \
     -v /sys/devices:/sys/devices \
     -v /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings \
+    -v $XDG_RUNTIME_DIR:$XDG_RUNTIME_DIR \
     -w $PWD \
+    -e DISPLAY=${DISPLAY:-:0} \
+    -e XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
     -e NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility,display \
     -e NVIDIA_VISIBLE_DEVICES=all \
-    -e DISPLAY=$DISPLAY \
     -e enableRawReprocess=2 \
     hololink-demo:$VERSION \
     $*
