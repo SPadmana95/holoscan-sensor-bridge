@@ -84,6 +84,27 @@ target_link_libraries(vb1940_player
 
 list(APPEND EXAMPLE_INSTALL_TARGETS vb1940_player)
 
+#add_executable(holoviz_samp_disp
+#  holoviz_samp_disp.cpp
+#  )
+
+#include(hololink_deps/pybind11)
+#target_link_libraries(holoviz_samp_disp
+#  PRIVATE
+#    hololink
+#    hololink::operators::csi_to_bayer
+#    hololink::operators::image_processor
+#    hololink::operators::roce_receiver
+#    holoscan::core
+#    holoscan::ops::bayer_demosaic
+#    holoscan::ops::holoviz
+#    holoscan::viz::imgui
+#    holoscan::pybind11
+#    pybind11::embed
+#  )
+
+#list(APPEND EXAMPLE_INSTALL_TARGETS holoviz_samp_disp)
+
 if(HOLOLINK_BUILD_FUSA)
   add_executable(fusa_coe_imx274_player
     fusa_coe_imx274_player.cpp
@@ -261,3 +282,5 @@ endif() # NOT HOLOLINK_BUILD_ONLY_NATIVE
 install(FILES ${EXAMPLE_INSTALL_FILES}
         DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT hololink-examples)
+
+add_subdirectory(aditof)
