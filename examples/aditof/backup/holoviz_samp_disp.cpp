@@ -117,7 +117,7 @@ public:
         //======================================================================
         // 4. Camera initialization and configuration
         //======================================================================
-        adcam_inst->adcam_Only_reset();
+        adcam_inst->adcam_hard_reset();
 
         if (adcam_inst->probe_adcam_adtf3175()) {
             std::cout << "ADTF3175 Found" << std::endl;

@@ -19,6 +19,13 @@
 #ifndef SENSORS_ADCAM_LIB_HPP
 #define SENSORS_ADCAM_LIB_HPP
 
+#define GET_MASTER_CHIP_ID_CMD      0x0112
+#define GET_SLAVE_CHIP_ID_CMD       0x0116
+#define GET_IMAGER_STATUS_CMD       0x0020
+#define GET_MASTER_FIRMWARE_COMMAND 0x01
+#define GET_SLAVE_FIRMWARE_COMMAND  0x04
+#define SET_SWITCH_TO_BURST_MODE    0x0019
+
 #include <cstdint>
 #include <getopt.h>
 #include <iostream>
@@ -106,25 +113,28 @@ class Adcam {
 
   int probe_adcam_adtf3175();
   std::vector<uint8_t> force_stop_burst_mode();
-  std::vector<uint8_t> get_fw_version();
+  bool switch_from_standard_to_burst();
+  bool switch_from_burst_to_standard();
+  std::vector<uint8_t> get_fw_version(uint8_t cmd = GET_MASTER_FIRMWARE_COMMAND);
+  std::vector<uint8_t> get_fw_version_burst_mode(uint8_t cmd = GET_MASTER_FIRMWARE_COMMAND);
   void get_chip_status();
 
   void stream_on();
   void stream_off();
 
-  void get_ChipID();
+  bool get_ChipID(uint16_t cmd = GET_MASTER_CHIP_ID_CMD);
   void get_Status();
   std::vector<uint8_t> get_ClockContinuousMode();
 
   void adcam_reset_power_on();
-  void adcam_Only_reset();
+  void adcam_hard_reset();
 
   void profile_fpga_perf(uint32_t pin);
 
   // ---- Low-level register ops ----
-  void set_register(uint16_t reg, uint8_t value);
+  bool set_register(uint16_t reg, uint8_t value);
 
-  void set_register16_no_response(uint16_t* register_blob);
+  bool set_register16_no_response(uint16_t* register_blob);
 
   std::vector<uint8_t> set_register16_response(uint16_t* register_blob,
                                                size_t resp_len);

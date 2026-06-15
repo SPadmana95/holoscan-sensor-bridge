@@ -36,6 +36,7 @@
 #include <holoscan/operators/holoviz/holoviz.hpp>
 #include "adcam_lib.hpp"
 #include "adcam_unpack_op.hpp"
+#include "programmer.hpp"
 
 
 namespace {
@@ -117,7 +118,7 @@ public:
         //======================================================================
         // 4. Camera initialization and configuration
         //======================================================================
-        //adcam_inst->adcam_Only_reset();
+        //adcam_inst->adcam_hard_reset();
 
         if (adcam_inst->probe_adcam_adtf3175()) {
             std::cout << "ADTF3175 Found" << std::endl;
@@ -268,6 +269,7 @@ int main(int argc, char** argv)
     int32_t adcam_mode = 6;
     int32_t do_reset = 0;
     int32_t do_capture = 0;
+    std::string firmware_manifest;
     int32_t reset_pin = 0;
     bool headless = false;
     bool fullscreen = false;
@@ -310,6 +312,7 @@ int main(int argc, char** argv)
         { "ibv-port", required_argument, nullptr, 0 },
         { "resetAdcam", required_argument, nullptr, 0 },
         { "resetPin", required_argument, nullptr, 0 },
+        { "firmwareUpdate", required_argument, nullptr, 0 },
         { "capture", required_argument, nullptr, 0 },
         { "log-level", required_argument, nullptr, 0 },
         { 0, 0, nullptr, 0 }
@@ -367,6 +370,9 @@ int main(int argc, char** argv)
             } else if (opt->name == std::string("resetAdcam")) {
                 do_reset = std::stoi(argument);
 
+            } else if (opt->name == std::string("firmwareUpdate")) {
+                firmware_manifest = argument;
+
             } else if (opt->name == std::string("capture")) {
                 do_capture = std::stoi(argument);
 
@@ -398,6 +404,7 @@ int main(int argc, char** argv)
                       << "  --captureMode <0-6>   Adcam Capture code (0-6), default 6\n"
                       << "  --resetAdcam <0/1>    Reset ADCAM module\n"
                       << "  --resetPin <0-31>    Reset ADCAM pin, refer readme, default 0\n"
+                      << "  --firmwareUpdate <manifest.yaml>  Update ADCAM firmware using the given manifest file\n"
                       ;
             return EXIT_SUCCESS;
 
@@ -412,6 +419,25 @@ int main(int argc, char** argv)
     try {
         // Set Holoscan logging level
         holoscan::set_log_level(log_level);
+
+        // Map holoscan::LogLevel to HsbLogLevel and apply immediately so
+        // hololink.cpp messages respect the same level from startup.
+        {
+            using HL = holoscan::LogLevel;
+            using HSB = hololink::logging::HsbLogLevel;
+            HSB hsb_level = hololink::logging::HSB_LOG_LEVEL_INFO;
+            switch (log_level) {
+            case HL::TRACE:    hsb_level = HSB::HSB_LOG_LEVEL_TRACE;  break;
+            case HL::DEBUG:    hsb_level = HSB::HSB_LOG_LEVEL_DEBUG;  break;
+            case HL::INFO:     hsb_level = HSB::HSB_LOG_LEVEL_INFO;   break;
+            case HL::WARN:     hsb_level = HSB::HSB_LOG_LEVEL_WARN;   break;
+            case HL::ERROR:
+            case HL::CRITICAL:
+            case HL::OFF:
+            default:           hsb_level = HSB::HSB_LOG_LEVEL_ERROR;  break;
+            }
+            hololink::logging::hsb_log_level = hsb_level;
+        }
         std::cout << "Initializing." << std::endl;
 
         //--------------------------------------------------------------------------
@@ -462,10 +488,33 @@ int main(int argc, char** argv)
         if (do_reset > 0)
         {
             adcam_inst->adcam_reset_power_on();
-            //adcam_inst->adcam_Only_reset();
+            //adcam_inst->adcam_hard_reset();
+        }
+
+        if (!firmware_manifest.empty())
+        {
+            hololink::Programmer::Args args;
+            args.manifest = firmware_manifest;
+            args.hololink_ip = hololink_ip;
+            args.log_level = hololink::logging::hsb_log_level;
+
+            std::cout << "Initializing firmware update." << std::endl;
+
+            hololink::Programmer programmer(args, args.manifest);
+            programmer.fetch_manifest("hololink");
+            programmer.check_eula();
+
+            std::cout << "EULA accepted.." << std::endl;
+            programmer.check_images();
+            auto ok = programmer.program_and_verify_images(hololink, adcam_inst);
+            hololink->stop();
+            CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
+            return EXIT_SUCCESS;
         }
                 
-        adcam_inst->get_ChipID();
+        if (!adcam_inst->get_ChipID(GET_MASTER_CHIP_ID_CMD)) {
+            std::cerr << "[MASTER] Failed to read Chip ID" << std::endl;
+        }
 
         if (adcam_inst->probe_adcam_adtf3175()) {
             std::cout << "ADTF3175 Found" << std::endl;

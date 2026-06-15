@@ -616,7 +616,7 @@ void Adcam::adcam_reset_power_on() {
   std::this_thread::sleep_for(std::chrono::seconds(10));
 }
 
-void Adcam::adcam_Only_reset() {
+void Adcam::adcam_hard_reset() {
   HOLOSCAN_LOG_DEBUG("ADCAM - Making Reset LOW ONLY");
   pf_gpio_.configure_reset_low(reset_pin_);
   std::this_thread::sleep_for(std::chrono::milliseconds(200));

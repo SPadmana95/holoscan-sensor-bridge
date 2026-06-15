@@ -16,11 +16,19 @@
 set(ADITOF_INSTALL_TARGETS)
 if(NOT HOLOLINK_BUILD_ONLY_NATIVE)
 
+find_package(yaml-cpp REQUIRED)
+find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED)
+
 add_executable(adcam_player
   adcam_player.cpp
   adcam_lib.cpp
   adcam_unpack_op.cpp
   adcam_unpack_op.cu
+  programmer.cpp
+  adsd3500_flash.cpp
+  compute_crc.cpp
+  crc_table.cpp
   )
 
 include(hololink_deps/pybind11)
@@ -37,6 +45,10 @@ target_link_libraries(adcam_player
     holoscan::viz::imgui
     holoscan::pybind11
     pybind11::embed
+    yaml-cpp
+    CURL::libcurl
+    OpenSSL::SSL
+    OpenSSL::Crypto
   )
 
 list(APPEND ADITOF_INSTALL_TARGETS adcam_player)

@@ -117,7 +117,7 @@ class Adcam {
   std::vector<uint8_t> get_ClockContinuousMode();
 
   void adcam_reset_power_on();
-  void adcam_Only_reset();
+  void adcam_hard_reset();
 
   void profile_fpga_perf(uint32_t pin);
 

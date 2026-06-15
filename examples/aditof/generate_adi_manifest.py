@@ -185,7 +185,7 @@ def main():
             "images": [
                 {
                     "content": bin_name,
-                    "context": "adi",
+                    "context": "adcam",
                 }
             ],
             "licenses": [license_name],

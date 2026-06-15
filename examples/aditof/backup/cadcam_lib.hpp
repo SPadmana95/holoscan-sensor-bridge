@@ -125,7 +125,7 @@ public:
     void get_Status();
     std::vector<uint8_t> get_ClockContinuousMode();
     void adcam_reset_power_on();
-    void adcam_Only_reset();
+    void adcam_hard_reset();
 
     // Converter interface – adapt to your pipeline
     struct Converter {
@@ -206,7 +206,7 @@ class Adcam {
                         //     hololink::Channel* hololink_channel,
                         //     void* channel_metadata);
 
-  void adcam_Only_reset();
+  void adcam_hard_reset();
                         // hololink::Hololink* hololink,
                         // hololink::Channel* hololink_channel,
                         // void* channel_metadata);

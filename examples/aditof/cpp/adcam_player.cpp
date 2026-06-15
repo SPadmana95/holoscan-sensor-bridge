@@ -453,7 +453,7 @@ int main(int argc, char** argv)
         if (do_reset > 0)
         {
             adcam_inst->adcam_reset_power_on();
-            //adcam_inst->adcam_Only_reset();
+            //adcam_inst->adcam_hard_reset();
         }
                 
         adcam_inst->get_ChipID();

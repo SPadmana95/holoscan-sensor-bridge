@@ -493,7 +493,7 @@ void Adcam::adcam_reset_power_on()
   std::this_thread::sleep_for(std::chrono::seconds(10));
 }
 
-void Adcam::adcam_Only_reset()
+void Adcam::adcam_hard_reset()
                             //  hololink::Hololink* /*hololink*/,
                             //  hololink::Channel* /*hololink_channel*/,
                             //  void* /*channel_metadata*/) 
