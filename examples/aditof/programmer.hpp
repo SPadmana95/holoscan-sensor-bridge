@@ -26,9 +26,8 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include <hololink/core/data_channel.hpp>
+#include <hololink/core/hololink.hpp>
 #include <hololink/core/logging_internal.hpp>
-#include <hololink/core/metadata.hpp>
 
 // Forward declaration — avoids pulling the full Adcam header into every TU.
 namespace hololink { namespace sensors { class Adcam; } }
@@ -44,18 +43,14 @@ public:
         std::string manifest;
         std::string archive;
         bool accept_eula = false;
-        bool skip_power_cycle = false;
     };
 
     Programmer(const Args& args, const std::string& manifest_filename);
     ~Programmer();
 
     void fetch_manifest(const std::string& section);
-    std::shared_ptr<Hololink> hololink(const Metadata& channel_metadata);
-    bool check_fpga_uuid(const std::string& fpga_uuid);
     bool program_and_verify_images(std::shared_ptr<Hololink> hololink,
                                     std::shared_ptr<hololink::sensors::Adcam> adcam = nullptr);
-    void power_cycle();
     std::vector<uint8_t> fetch_content(const std::string& content_name);
     void check_eula();
     void check_images();

@@ -32,7 +32,6 @@
 namespace hololink {
 
 std::atomic<int> Programmer::instances { 0 };
-constexpr int64_t MINIMUM_HSB_IP_VERSION = 0x2412;
 
 namespace {
 
@@ -125,64 +124,6 @@ void Programmer::fetch_manifest(const std::string& section)
     }
 }
 
-std::shared_ptr<Hololink> Programmer::hololink(const Metadata& channel_metadata)
-{
-    auto fpga_uuid = channel_metadata.get<std::string>("fpga_uuid");
-    if (!fpga_uuid) {
-        throw std::runtime_error("No fpga_uuid in channel metadata");
-    }
-    if (!check_fpga_uuid(fpga_uuid.value())) {
-        auto peer_ip = channel_metadata.get<std::string>("peer_ip");
-        if (!peer_ip) {
-            throw std::runtime_error("No peer_ip in channel metadata");
-        }
-        throw std::runtime_error(fmt::format("Sensor bridge ip={} ({}) isn't supported by this manifest file.",
-            peer_ip.value(), fpga_uuid.value()));
-    }
-
-    auto hsb_ip_version = channel_metadata.get<int64_t>("hsb_ip_version"); // or None
-    if (!hsb_ip_version) {
-        throw UnsupportedVersion("No 'hsb_ip_version' field found.");
-    }
-    if (hsb_ip_version.value() < MINIMUM_HSB_IP_VERSION) {
-        throw UnsupportedVersion(fmt::format("hsb_ip_version={:#X}; minimum supported version={:#X}.",
-            hsb_ip_version.value(), MINIMUM_HSB_IP_VERSION));
-    }
-
-    auto hololink = Hololink::from_enumeration_metadata(channel_metadata);
-    DataChannel hololink_channel(channel_metadata, hololink);
-    hololink->start();
-    return hololink;
-}
-
-bool Programmer::check_fpga_uuid(const std::string& fpga_uuid)
-{
-    if (fpga_uuid != HOLOLINK_LITE_UUID) {
-        // Sorry for the inconsistent use of failure reporting...
-        // fix this only if it actually becomes important.
-        throw std::runtime_error(fmt::format("Unexpected fpga_uuid in channel metadata; expected {} but got {}",
-            HOLOLINK_LITE_UUID, fpga_uuid));
-    }
-    auto fpga_uuids = manifest_node_["fpga_uuid"];
-    if (fpga_uuids.IsNull()) {
-        return false;
-    }
-
-    // Check if the fpga_uuid is in the list of supported UUIDs
-    if (fpga_uuids.IsSequence()) {
-        for (const auto& uuid : fpga_uuids) {
-            if (uuid.as<std::string>() == fpga_uuid) {
-                return true;
-            }
-        }
-    } else if (fpga_uuids.IsScalar()) {
-        // Single UUID case
-        return fpga_uuids.as<std::string>() == fpga_uuid;
-    }
-
-    return false;
-}
-
 bool Programmer::program_and_verify_images(std::shared_ptr<Hololink> hololink,
                                            std::shared_ptr<hololink::sensors::Adcam> adcam)
 {
@@ -197,16 +138,6 @@ bool Programmer::program_and_verify_images(std::shared_ptr<Hololink> hololink,
     }
 
     return ok;
-}
-
-void Programmer::power_cycle()
-{
-    std::cout << "You must now physically power cycle the sensor bridge device." << std::endl;
-    if (args_.skip_power_cycle) {
-        return;
-    }
-    std::cout << "Press <Enter> to continue: ";
-    std::cin.get();
 }
 
 std::vector<uint8_t> Programmer::fetch_content(const std::string& content_name)
