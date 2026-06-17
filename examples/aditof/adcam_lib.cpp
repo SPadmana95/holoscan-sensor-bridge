@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -225,7 +226,16 @@ Adcam::Adcam(std::shared_ptr<hololink::DataChannel> hololink_channel,
       reset_pin_(reset_pin) {
   (void)hololink_i2c_controller_address;
 
-  HOLOSCAN_LOG_DEBUG("[ADCAM] Constructed");
+  // Derive frame geometry from mode table instead of hardcoded defaults.
+  if (adcam_mode >= std::size(ADCAM_MODE_TABLE)) {
+      throw std::runtime_error(
+          fmt::format("Adcam: unsupported adcam_mode {}", adcam_mode));
+  }
+  width_  = ADCAM_MODE_TABLE[adcam_mode].width;
+  height_ = ADCAM_MODE_TABLE[adcam_mode].height;
+
+  HOLOSCAN_LOG_DEBUG("[ADCAM] Constructed mode={} width={} height={}",
+                     adcam_mode, width_, height_);
 
   if (!hololink_) {
     throw std::runtime_error("Adcam: hololink is null");
@@ -421,12 +431,18 @@ void Adcam::set_mipi(std::shared_ptr<hololink::sensors::Adcam> adcam_inst) {
 }
 
 void Adcam::set_mode() {
-  HOLOSCAN_LOG_DEBUG("Setting QMP mode");
+  // Build the two-word Set Imager Mode command:
+  //   Word 1: 0xDAXX  — XX = imager mode number (0-10)
+  //   Word 2: 0xYYYY  — dynamically computed from per-mode field configuration
+  uint16_t mode_reg     = static_cast<uint16_t>(0xDA00 | (adcam_mode_ & 0xFF));
+  uint16_t mode_setting = adcam_make_mode_settings(ADCAM_MODE_TABLE[adcam_mode_]);
 
-  // Original register sequence preserved.
-  uint16_t reg[] = {2, 0xDA06, 0x280F};
+  HOLOSCAN_LOG_INFO("Setting imager mode={} reg=0x{:04X} settings=0x{:04X}",
+                     adcam_mode_, mode_reg, mode_setting);
+
+  uint16_t reg[] = {2, mode_reg, mode_setting};
   if (!set_register16_no_response(reg)) {
-    HOLOSCAN_LOG_ERROR("set_mode: failed to set QMP mode");
+    HOLOSCAN_LOG_ERROR("set_mode: failed to set imager mode {}", adcam_mode_);
   }
 }
 

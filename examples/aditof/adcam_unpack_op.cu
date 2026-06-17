@@ -101,23 +101,30 @@ void shift_and_cast_kernel(const uint16_t* in,
 //==============================================================================
 //  KERNEL: unpack_kernel
 //------------------------------------------------------------------------------
-//  Unpacks ADI ToF 5‑byte‑per‑pixel format:
+//  Unpacks ADI ToF QMP v8.0.0+ two-subframe format:
 //
-//      Byte 0–1 → depth (uint16)
-//      Byte 2   → confidence (upper byte only)
-//      Byte 3–4 → active brightness (uint16)
+//  Subframe 1 — Depth + Confidence interleaved (3 bytes/pixel):
+//      Byte 0: depth LSB
+//      Byte 1: depth MSB  → depth[i] = uint16 little-endian
+//      Byte 2: conf       → conf[i]  = uint8
 //
-//  raw layout per pixel:
-//      [0] depth LSB
-//      [1] depth MSB
-//      [2] conf (8‑bit, stored in MSB position)
-//      [3] ab LSB
-//      [4] ab MSB
-//------------------------------------------------------------------------------
-//  raw   : uint8_t*   (device) — packed input
-//  depth : uint16_t*  (device) — unpacked depth
-//  conf  : uint16_t*  (device) — unpacked confidence
-//  ab    : uint16_t*  (device) — unpacked active brightness
+//  Subframe 2 — Active Brightness only (2 bytes/pixel):
+//      Byte 0: ab LSB
+//      Byte 1: ab MSB     → ab[i] = uint16 little-endian
+//
+//  Memory layout (total = 5 × width × height bytes):
+//
+//   ┌─────────────────────────────────────────────────────┐
+//   │  Subframe 1: [D1_L][D1_H][C1] [D2_L][D2_H][C2]...   │  3 × N bytes
+//   ├─────────────────────────────────────────────────────┤
+//   │  Subframe 2: [AB1_L][AB1_H] [AB2_L][AB2_H] ...      │  2 × N bytes
+//   └─────────────────────────────────────────────────────┘
+//   where N = width × height
+//
+//  raw   : uint8_t*   (device) — packed input (5 × N bytes)
+//  depth : uint16_t*  (device) — unpacked depth plane
+//  conf  : uint16_t*  (device) — unpacked confidence plane
+//  ab    : uint16_t*  (device) — unpacked active brightness plane
 //==============================================================================
 __global__
 void unpack_kernel(const uint8_t* raw,
@@ -132,11 +139,16 @@ void unpack_kernel(const uint8_t* raw,
 
     if (idx >= size) return;
 
-    int base = idx * 5;
+    // Subframe 1: Depth + Confidence interleaved at 3 bytes/pixel
+    int sf1_base = idx * 3;
+    depth[idx] = static_cast<uint16_t>(raw[sf1_base]
+                                     | (raw[sf1_base + 1] << 8));
+    conf[idx]  = static_cast<uint16_t>(raw[sf1_base + 2]);
 
-    depth[idx] = raw[base] | (raw[base + 1] << 8);
-    conf[idx]  = raw[base + 2] << 8;  // stored in MSB position
-    ab[idx]    = raw[base + 3] | (raw[base + 4] << 8);
+    // Subframe 2: Active Brightness at 2 bytes/pixel, starts after subframe 1
+    int sf2_base = size * 3 + idx * 2;
+    ab[idx] = static_cast<uint16_t>(raw[sf2_base]
+                                  | (raw[sf2_base + 1] << 8));
 }
 
 
@@ -175,22 +187,24 @@ void jet_kernel(const uint16_t* depth,
 //  KERNEL: grayscale_kernel
 //------------------------------------------------------------------------------
 //  Converts 16‑bit values → grayscale RGB.
-//  Normalization: 0–4096 → 0–255
+//  max_val: normalization range (use 4096 for AB, 255 for Confidence)
 //------------------------------------------------------------------------------
-//  input : uint16_t* (device)
-//  rgb   : uint8_t*  (device)
+//  input   : uint16_t* (device)
+//  rgb     : uint8_t*  (device)
+//  max_val : float     — full-scale value mapped to 255
 //==============================================================================
 __global__
 void grayscale_kernel(const uint16_t* input,
                       uint8_t* rgb,
-                      int size)
+                      int size,
+                      float max_val)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= size) return;
 
     uint16_t v = input[idx];
 
-    uint8_t norm = min(255, (int)((float)v * 255.0f / 4096.0f));
+    uint8_t norm = min(255, (int)((float)v * 255.0f / max_val));
 
     rgb[idx * 3 + 0] = norm;
     rgb[idx * 3 + 1] = norm;
@@ -248,17 +262,19 @@ void jet_kernel_launch(const uint16_t* depth,
 
 //------------------------------------------------------------------------------
 // Launch grayscale kernel
+//  max_val: 4096 for Active Brightness, 255 for Confidence
 //------------------------------------------------------------------------------
 void grayscale_kernel_launch(const uint16_t* input,
                              uint8_t* rgb,
                              int size,
-                             cudaStream_t stream)
+                             cudaStream_t stream,
+                             float max_val)
 {
     int threads = 256;
     int blocks = (size + threads - 1) / threads;
 
     grayscale_kernel<<<blocks, threads, 0, stream>>>(
-        input, rgb, size);
+        input, rgb, size, max_val);
 }
 
 

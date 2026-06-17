@@ -96,6 +96,12 @@ ls examples/aditof/
 # Capture only (camera already initialized)
 ./adcam_player --capture 1
 
+# Capture using MP mode 0 (1024×1024, 16-bit depth+AB, 8-bit conf, ab_averaging off)
+./adcam_player --captureMode 0 --capture 1
+
+# Capture using QMP mode 3 (512×512, 16-bit depth+AB, 8-bit conf, ab_averaging on)
+./adcam_player --captureMode 3 --capture 1
+
 # Headless capture with a 100-frame limit
 ./adcam_player --capture 1 --headless --frame-limit 100
 
@@ -112,7 +118,7 @@ ls examples/aditof/
 | `--hololink <ip>` | string | `192.168.0.2` | IP address of the HSB |
 | `--resetAdcam <0\|1>` | int | `0` | Perform full power-on reset sequence |
 | `--resetPin <0-31>` | int | `0` | GPIO pin number used for camera reset |
-| `--captureMode <0-6>` | int | `6` | ADCAM capture/mode code |
+| `--captureMode <0-6>` | int | `6` | QMP capture mode — selects frame geometry (see table below) |
 | `--capture <0\|1>` | int | `0` | Start capture and display pipeline |
 | `--firmwareUpdate <file>` | string | — | Path to firmware manifest YAML |
 | `--headless` | flag | off | Run Holoviz without a display window |
@@ -122,6 +128,57 @@ ls examples/aditof/
 | `--ibv-port <n>` | uint | `1` | InfiniBand port number |
 | `--log-level <level>` | string | `info` | Log verbosity: `trace` `debug` `info` `warn` `error` `critical` `off` |
 | `-h`, `--help` | flag | — | Print usage |
+
+**Capture mode → frame geometry and imager settings** (from `ADCAM_MODE_TABLE` in `adcam_lib.hpp`):
+
+| Mode | `width_` (RAW_8 bytes/line) | `height_` (rows) | Actual pixels | `phase_depth_bits` | `ab_bits` | `confidence_bits` | `ab_averaging` | `depth_enable` | `output_mipi` |
+|------|---------------------------|-----------------|---------------|--------------------|-----------|-------------------|---------------|----------------|---------------|
+| 0 | 3072 | 1707 | 1024 × 1024 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 0 | 1 | 2 |
+| 1 | 3072 | 1707 | 1024 × 1024 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 0 | 1 | 2 |
+| 2 | 2560 | 512 | 512 × 512 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
+| 3 | 2560 | 512 | 512 × 512 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
+| 4 | 1024 | 1024 | 1024 × 1024 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
+| 5 | 2560 | 512 | 512 × 512 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
+| **6** (default) | **2560** | **512** | **512 × 512** | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
+
+`width_` = actual pixels × 5 bytes/pixel (RAW_8 MIPI encodes 1 byte/clock).
+
+**Imager settings field encoding:**
+
+| Field | Valid values | Encoding |
+|-------|-------------|----------|
+| `phase_depth_bits` | 0, 2, 3, 4, 5, 6 | `0`=0-bit, `2`=8-bit, `3`=10-bit, `4`=12-bit, `5`=14-bit, `6`=16-bit |
+| `ab_bits` | 0, 2, 3, 4, 5, 6 | `0`=0-bit, `2`=8-bit, `3`=10-bit, `4`=12-bit, `5`=14-bit, `6`=16-bit |
+| `confidence_bits` | 0, 1, 2 | `0`=off, `1`=4-bit, `2`=8-bit |
+| `ab_averaging` | 0, 1 | bool: `0`=off, `1`=on |
+| `depth_enable` | 0, 1 | bool: `0`=off, `1`=on |
+| `output_mipi` | 0, 1, 2 | number of MIPI output lanes |
+
+**ADSD3500 Set Imager Mode command** — `set_mode()` in `adcam_lib.cpp`:
+
+`set_mode()` sends a two-word I²C command. Both words are built dynamically from
+`ADCAM_MODE_TABLE[adcam_mode_]` via `adcam_make_mode_settings()`:
+
+```
+Word 1: 0xDAXX   — XX = mode number (e.g. mode 6 → 0xDA06)
+Word 2: 0xYYYY   — bit-packed imager settings:
+
+  Bit  0      : depth_enable
+  Bit  1      : data_interleaving  (always 1)
+  Bit  2      : ab_enable          (always 1)
+  Bit  3      : ab_averaging
+  Bits [6:4]  : phase_depth_bits   encoded as (6 − enum_val)
+  Bits [9:7]  : ab_bits            encoded as (6 − enum_val)
+  Bits [11:10]: confidence_bits    (direct: 0=off, 1=4-bit, 2=8-bit)
+  Bits [13:12]: output_mipi        (direct: 0, 1, or 2 lanes)
+```
+
+Example computed values:
+
+| Modes | `phase_depth_bits` | `ab_bits` | `confidence_bits` | `ab_averaging` | Word 2 |
+|-------|--------------------|-----------|-------------------|---------------|--------|
+| 0, 1 | 6 | 6 | 2 | 0 | `0x2807` |
+| 2, 3, 4, 5, 6 | 6 | 6 | 2 | 1 | `0x280F` |
 
 ---
 
@@ -203,7 +260,10 @@ main()
            │     │           probe_adcam_adtf3175()     — confirm sensor reachable
            │     │           configure_converter()      — set CSI frame geometry (width × height)
            │     │           set_mipi()                 — configure MIPI lane speed + deskew
-           │     │           set_mode()                 — set QMP capture mode register
+           │     │           set_mode()                 — send Set Imager Mode command:
+           │     │                                         Word 1: 0xDA00 | adcam_mode_
+           │     │                                         Word 2: adcam_make_mode_settings()
+           │     │                                                  (built from ADCAM_MODE_TABLE)
            │     │           get_csi_length()           — compute frame_size for receiver
            │     │
            │     ├─ Step 5: make_operator<RoceReceiverOp | LinuxReceiverOp>("receiver")
@@ -272,7 +332,7 @@ declared in the header and called from `adcam_unpack_op.cpp`:
 | `shift_and_cast_kernel` | `shift_and_cast_kernel(..., cudaStream_t)` | Converts `uint16_t` → `uint8_t` by right-shifting 8 bits (CSI buffer arrives as 16-bit words); launcher is a C++ overload of the same name with an extra `cudaStream_t` parameter |
 | `unpack_kernel` | `unpack_kernel_launch()` | Splits 5 B/px packed stream → separate `depth[]`, `conf[]`, `ab[]` `uint16_t` arrays — one thread per pixel |
 | `jet_kernel` | `jet_kernel_launch()` | Maps `depth[]` → RGB using a 256-entry Jet LUT stored in CUDA `__constant__` memory; depth normalized to 0–4000 mm |
-| `grayscale_kernel` | `grayscale_kernel_launch()` | Maps `ab[]` / `conf[]` → grayscale RGB; normalized to 0–4096 |
+| `grayscale_kernel` | `grayscale_kernel_launch(..., max_val)` | Maps `ab[]` / `conf[]` → grayscale RGB; `max_val=4096` for AB (12-bit), `max_val=255` for Confidence (8-bit) |
 
 The Jet LUT is placed in `__constant__` memory for cached broadcast reads across all threads.
 
@@ -286,34 +346,19 @@ This kernel right-shifts each 16-bit word by 8 bits (`>> 8`) and truncates to `u
 recovering the original raw bytes. Without this step the subsequent unpack kernel would
 read garbage.
 
-**`unpack_kernel`** — Demultiplex 5-byte pixels into 3 separate planes
+**`unpack_kernel`** — Demultiplex QMP v8.0.0+ two-subframe frame into 3 planes
 
-One CUDA thread per pixel reads 5 consecutive bytes and extracts:
-```
-depth[i] = byte[0] | (byte[1] << 8)   → 16-bit distance value
-conf[i]  = byte[2] << 8               → 8-bit confidence placed in MSB
-ab[i]    = byte[3] | (byte[4] << 8)   → 16-bit active brightness value
-```
-
-ADI ToF 5-byte-per-pixel layout:
-
-| Byte | Field | Description |
-|------|-------|-------------|
-| `[0]` | depth LSB | Lower 8 bits of depth |
-| `[1]` | depth MSB | Upper 8 bits of depth → combined: `uint16` distance |
-| `[2]` | conf | 8-bit confidence, stored in MSB position (`conf << 8`) |
-| `[3]` | ab LSB | Lower 8 bits of active brightness |
-| `[4]` | ab MSB | Upper 8 bits of active brightness → combined: `uint16` AB |
+One CUDA thread per pixel reads from two subframe regions:
 
 ```
-Byte index:   0      1      2      3      4
-             --------------------------------
-Data:        D_LSB  D_MSB  CONF   AB_LSB AB_MSB
-             --------------------------------
+// Subframe 1: Depth + Confidence interleaved (3 bytes/pixel)
+sf1_base   = idx * 3
+depth[idx] = raw[sf1_base] | (raw[sf1_base + 1] << 8)   // uint16 LE
+conf[idx]  = raw[sf1_base + 2]                           // uint8
 
-Depth       = [1][0]   (uint16 little-endian)
-Confidence  = [2]      (uint8, stored in MSB position)
-Brightness  = [4][3]   (uint16 little-endian)
+// Subframe 2: Active Brightness (2 bytes/pixel), after subframe 1
+sf2_base   = size * 3 + idx * 2
+ab[idx]    = raw[sf2_base] | (raw[sf2_base + 1] << 8)   // uint16 LE
 ```
 
 Inputs/outputs (all device memory):
@@ -325,6 +370,49 @@ Inputs/outputs (all device memory):
 Output: three separate `uint16_t` device arrays (`depth[]`, `conf[]`, `ab[]`),
 each 512×512 — one value per pixel.
 
+> **Firmware v8.0.0+ — Changed frame layout (QMP mode)**
+>
+> Starting with firmware v8.0.0 the frame is split into **two subframes** instead
+> of a single 5-byte/pixel interleaved stream:
+>
+> | Subframe | Content | Bytes/pixel | Total bytes |
+> |----------|---------|-------------|-------------|
+> | 1 | Depth (16-bit) + Confidence (8-bit) interleaved per pixel | 3 | 3 × 512 × 512 |
+> | 2 | Active Brightness (16-bit) for all pixels | 2 | 2 × 512 × 512 |
+>
+> Full stream layout:
+>
+> ```
+> ┌─────────────────────────────────────────────────────┐
+> │  Subframe 1 — Depth + Confidence (interleaved)      │
+> │  [ D1_L | D1_H | C1 | D2_L | D2_H | C2 | ... ]      │
+> │  3 bytes × (512 × 512) pixels                       │
+> ├─────────────────────────────────────────────────────┤
+> │  Subframe 2 — Active Brightness                     │
+> │  [ AB1_L | AB1_H | AB2_L | AB2_H | ... ]            │
+> │  2 bytes × (512 × 512) pixels                       │
+> └─────────────────────────────────────────────────────┘
+> ```
+>
+> Per-pixel extraction (v8.0.0+):
+> ```
+> depth[i] = subframe1[i*3 + 0] | (subframe1[i*3 + 1] << 8)  → uint16
+> conf[i]  = subframe1[i*3 + 2]                               → uint8
+> ab[i]    = subframe2[i*2 + 0] | (subframe2[i*2 + 1] << 8)  → uint16
+> ```
+>
+> The total frame size remains the same: 5 × 512 × 512 bytes.
+> The 5 bytes per pixel are fully consumed — there are **no padding or don't-care bytes**:
+>
+> | Subframe | Bytes/pixel | Role | Running total |
+> |----------|-------------|------|---------------|
+> | SF1 | 3 | Depth (2 B) + Confidence (1 B) | 3 × N |
+> | SF2 | 2 | Active Brightness (2 B) | 2 × N |
+> | **Total** | **5** | | **5 × N** |
+>
+> `3N + 2N = 5N` — the same total as the previous single-interleaved format.
+> `unpack_kernel` is updated to handle this two-subframe layout for v8.0.0+ firmware.
+
 **`jet_kernel`** — Depth → false-color RGB (Jet colormap)
 
 Maps each `uint16_t` depth value to an RGB triplet using a precomputed 256-entry
@@ -334,9 +422,14 @@ Jet LUT stored in CUDA `__constant__` memory. Normalization: depth is divided by
 
 **`grayscale_kernel`** — AB / Confidence → grayscale RGB
 
-Maps each `uint16_t` value to a grayscale intensity: divides by 4096 and scales to
-0–255, then writes the same value to all three RGB channels. Used twice — once for
-**Active Brightness** and once for **Confidence**.
+Maps each `uint16_t` value to a grayscale intensity using a `max_val` parameter,
+then writes the same value to all three RGB channels. Used twice per frame with
+different normalization ranges:
+
+| Channel | `max_val` | Range | Reason |
+|---------|-----------|-------|---------|
+| Active Brightness | `4096.0` | 12-bit | AB is a 12-bit ADC value |
+| Confidence | `255.0` | 8-bit | Conf is a direct uint8 value (v8.0.0+ subframe 1) |
 
 ---
 

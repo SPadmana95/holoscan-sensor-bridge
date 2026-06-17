@@ -232,8 +232,8 @@ void ADTFUnpackOp::compute(holoscan::InputContext& op_input,
     // 11. Convert to RGB (Jet + grayscale)
     //--------------------------------------------------------------------------
     jet_kernel_launch(depth, depth_rgb_ptr, size, stream);
-    grayscale_kernel_launch(conf, conf_rgb_ptr, size, stream);
-    grayscale_kernel_launch(ab,   ab_rgb_ptr,   size, stream);
+    grayscale_kernel_launch(conf, conf_rgb_ptr, size, stream, 255.0f);   // conf: 8-bit range 0-255
+    grayscale_kernel_launch(ab,   ab_rgb_ptr,   size, stream, 4096.0f);  // AB:   12-bit range 0-4096
 
     //--------------------------------------------------------------------------
     // 12. Emit output entity

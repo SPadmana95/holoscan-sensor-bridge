@@ -34,7 +34,8 @@ void grayscale_kernel_launch(
     const uint16_t* input,
     uint8_t* rgb,
     int size,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    float max_val);
 
 void jet_kernel_launch(
     const uint16_t* depth,

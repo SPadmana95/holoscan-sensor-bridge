@@ -48,6 +48,65 @@
 
 namespace hololink::sensors {
 
+// ---------------------------------------------------------------------------
+// QMP capture mode → frame geometry and Set Imager Mode parameters.
+//
+// Word 2 (0xYYYY) bit layout for the ADSD3500 Set Imager Mode command:
+//   Bit  0     : depth_enable        (1 = depth output on)
+//   Bit  1     : data_interleaving   (always 1 in these modes)
+//   Bit  2     : ab_enable           (always 1 in these modes)
+//   Bit  3     : ab_averaging        (bool: 0 or 1)
+//   Bits [6:4] : phase_depth_bits    (register = 6 − enum; min=0, max=6)
+//                   0→0-bit  2→8-bit  3→10-bit  4→12-bit  5→14-bit  6→16-bit
+//   Bits [9:7] : ab_bits             (register = 6 − enum; min=0, max=6)
+//                   0→0-bit  2→8-bit  3→10-bit  4→12-bit  5→14-bit  6→16-bit
+//   Bits [11:10]: confidence_bits    (enum direct; min=0, max=2)
+//                   0→off(0-bit)  1→4-bit  2→8-bit
+//   Bits [13:12]: output_mipi        (number of MIPI lanes: 0, 1, or 2)
+// ---------------------------------------------------------------------------
+struct AdcamModeConfig {
+    int width;             // RAW_8 bytes per MIPI line
+    int height;            // number of MIPI lines (pixel rows)
+    // phase_depth_bits: min=0, max=6
+    //   0=0-bit, 2=8-bit, 3=10-bit, 4=12-bit, 5=14-bit, 6=16-bit
+    int phase_depth_bits;
+    // ab_bits: min=0, max=6
+    //   0=0-bit, 2=8-bit, 3=10-bit, 4=12-bit, 5=14-bit, 6=16-bit
+    int ab_bits;
+    // confidence_bits: min=0, max=2
+    //   0=off(0-bit), 1=4-bit, 2=8-bit
+    int confidence_bits;
+    int ab_averaging;      // bool: 0=off, 1=on
+    int depth_enable;      // bool: 0=off, 1=on
+    int output_mipi;       // MIPI lane count (0, 1, or 2)
+};
+
+// Build the 0xYYYY word for the Set Imager Mode register from an AdcamModeConfig.
+// data_interleaving (bit 1) and ab_enable (bit 2) are always asserted.
+constexpr uint16_t adcam_make_mode_settings(const AdcamModeConfig& cfg) {
+    uint16_t w = 0;
+    w |= static_cast<uint16_t>((cfg.depth_enable    & 0x1) << 0);
+    w |= static_cast<uint16_t>(1                           << 1);  // data_interleaving
+    w |= static_cast<uint16_t>(1                           << 2);  // ab_enable
+    w |= static_cast<uint16_t>((cfg.ab_averaging    & 0x1) << 3);
+    w |= static_cast<uint16_t>(((6 - cfg.phase_depth_bits) & 0x7) << 4);
+    w |= static_cast<uint16_t>(((6 - cfg.ab_bits)          & 0x7) << 7);
+    w |= static_cast<uint16_t>((cfg.confidence_bits & 0x3) << 10);
+    w |= static_cast<uint16_t>((cfg.output_mipi     & 0x3) << 12);
+    return w;
+}
+
+//                         width   height  phase_depth_bits  ab_bits  confidence_bits  ab_averaging  depth_enable  output_mipi
+constexpr AdcamModeConfig ADCAM_MODE_TABLE[] = {
+    /* 0 */ {3072, 1707,   6,  6,  2,    0,   1,   2},
+    /* 1 */ {3072, 1707,   6,  6,  2,    0,   1,   2},
+    /* 2 */ {2560,  512,   6,  6,  2,    1,   1,   2},
+    /* 3 */ {2560,  512,   6,  6,  2,    1,   1,   2},
+    /* 4 */ {1024, 1024,   6,  6,  2,    1,   1,   2},
+    /* 5 */ {2560,  512,   6,  6,  2,    1,   1,   2},
+    /* 6 */ {2560,  512,   6,  6,  2,    1,   1,   2},
+};
+
 enum class I2CExpanderOutputEN : uint8_t {
   OUTPUT_1 = 0b0001,
   OUTPUT_2 = 0b0010,
@@ -177,9 +236,8 @@ class Adcam {
   std::shared_ptr<hololink::Hololink> hololink_{nullptr};
   std::shared_ptr<Hololink::I2c> i2c_{nullptr};
 
-  int width_{2560};
-  int height_{512};
-  int mode_{3};
+  int width_{2560};    // set from ADCAM_MODE_TABLE in constructor
+  int height_{512};    // set from ADCAM_MODE_TABLE in constructor
   int pixel_format_{0};
   int test_{0};
 
