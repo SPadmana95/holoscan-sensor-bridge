@@ -65,8 +65,15 @@ namespace hololink::sensors {
 //   Bits [13:12]: output_mipi        (number of MIPI lanes: 0, 1, or 2)
 // ---------------------------------------------------------------------------
 struct AdcamModeConfig {
-    int width;             // RAW_8 bytes per MIPI line
-    int height;            // number of MIPI lines (pixel rows)
+    // MIPI frame dimensions — used for CSI converter configuration.
+    int width;         // RAW_8 bytes per MIPI line
+    int height;        // number of MIPI lines
+    // Actual image pixel dimensions — used by unpack_kernel.
+    // For QMP modes: pixel_width = width/5, pixel_height = height (no padding).
+    // For MP  modes: pixel_width * pixel_height * 5 < width * height
+    //                (MIPI frame has trailing zero-padding bytes).
+    int pixel_width;   // actual image pixels per row
+    int pixel_height;  // actual image pixel rows
     // phase_depth_bits: min=0, max=6
     //   0=0-bit, 2=8-bit, 3=10-bit, 4=12-bit, 5=14-bit, 6=16-bit
     int phase_depth_bits;
@@ -96,15 +103,18 @@ constexpr uint16_t adcam_make_mode_settings(const AdcamModeConfig& cfg) {
     return w;
 }
 
-//                         width   height  phase_depth_bits  ab_bits  confidence_bits  ab_averaging  depth_enable  output_mipi
+//           {mipi_w, mipi_h, px_w, px_h, phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi}
 constexpr AdcamModeConfig ADCAM_MODE_TABLE[] = {
-    /* 0 */ {3072, 1707,   6,  6,  2,    0,   1,   2},
-    /* 1 */ {3072, 1707,   6,  6,  2,    0,   1,   2},
-    /* 2 */ {2560,  512,   6,  6,  2,    1,   1,   2},
-    /* 3 */ {2560,  512,   6,  6,  2,    1,   1,   2},
-    /* 4 */ {1024, 1024,   6,  6,  2,    1,   1,   2},
-    /* 5 */ {2560,  512,   6,  6,  2,    1,   1,   2},
-    /* 6 */ {2560,  512,   6,  6,  2,    1,   1,   2},
+    /* 0 */ {3072, 1707, 1024, 1024,  6,  6,  2,    0,   1,   2},  // → 0x2807
+    /* 1 */ {3072, 1707, 1024, 1024,  6,  6,  2,    0,   1,   2},  // → 0x2807
+    //         QMP modes — no padding; frame layout: SF1=depth+conf(3B/px) + SF2=AB(2B/px) = 5 bytes/pixel.
+    /* 2 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
+    /* 3 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
+    //         MP mode — TODO: verify MIPI dims for mode 4 on hardware; no confidence channel.
+    /* 4 */ {3072, 1707, 1024, 1024,  6,  6,  0,    1,   1,   2},  // → 0x200F
+    //         QMP modes — no padding
+    /* 5 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
+    /* 6 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
 };
 
 enum class I2CExpanderOutputEN : uint8_t {
@@ -213,8 +223,10 @@ class Adcam {
   void configure_converter(
       std::shared_ptr<hololink::csi::CsiConverter> converter);
 
-  uint32_t get_width();
-  uint32_t get_height();
+  uint32_t get_width();           // MIPI frame line width (bytes)
+  uint32_t get_height();          // MIPI frame line count
+  uint32_t get_pixel_width();     // actual image pixels per row
+  uint32_t get_pixel_height();    // actual image pixel rows
 
   void start();
   void stop();
@@ -236,8 +248,10 @@ class Adcam {
   std::shared_ptr<hololink::Hololink> hololink_{nullptr};
   std::shared_ptr<Hololink::I2c> i2c_{nullptr};
 
-  int width_{2560};    // set from ADCAM_MODE_TABLE in constructor
-  int height_{512};    // set from ADCAM_MODE_TABLE in constructor
+  int width_{2560};            // MIPI frame line width — set from ADCAM_MODE_TABLE
+  int height_{512};            // MIPI frame line count  — set from ADCAM_MODE_TABLE
+  int pixel_width_{512};       // actual image pixels per row — set from ADCAM_MODE_TABLE
+  int pixel_height_{512};      // actual image pixel rows     — set from ADCAM_MODE_TABLE
   int pixel_format_{0};
   int test_{0};
 

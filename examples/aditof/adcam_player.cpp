@@ -199,8 +199,8 @@ public:
             make_operator<hololink::operators::ADTFUnpackOp>(
                 "ADIToF_data",
                 holoscan::Arg("num_planes", 3),
-                holoscan::Arg("width", 512),
-                holoscan::Arg("height", 512),
+                holoscan::Arg("width",  (int)adcam_inst->get_pixel_width()),
+                holoscan::Arg("height", (int)adcam_inst->get_pixel_height()),
                 holoscan::Arg("allocator", device_allocator_adtf),
                 holoscan::Arg("in_tensor_name", ""),
                 holoscan::Arg("out_tensor_name", "output"));

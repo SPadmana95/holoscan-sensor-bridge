@@ -9,6 +9,7 @@
 #include <gxf/std/tensor.hpp>
 
 #include <fstream>
+#include <thread>
 #include <cuda_runtime.h>
 
 //------------------------------------------------------------------------------
@@ -92,6 +93,11 @@ void ADTFUnpackOp::stop() {
 void ADTFUnpackOp::compute(holoscan::InputContext& op_input,
                            holoscan::OutputContext& op_output,
                            holoscan::ExecutionContext& context) {
+
+    static int frame_count = 0;
+    ++frame_count;
+    HOLOSCAN_LOG_INFO("[ADTFUnpackOp] compute() frame #{}", frame_count);
+    fflush(stdout);
 
     //--------------------------------------------------------------------------
     // 1. Receive input entity
@@ -216,24 +222,64 @@ void ADTFUnpackOp::compute(holoscan::InputContext& op_input,
 
     shift_and_cast_kernel(raw_u16, raw, size * 5, stream);
 
-    // Save raw packed frame once
+    // Verify shift_and_cast launched successfully
+    {
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            HOLOSCAN_LOG_ERROR("[ADTFUnpackOp] shift_and_cast_kernel launch error: {}",
+                               cudaGetErrorString(err));
+        }
+    }
+
+    // Save raw packed frame once — runs in background thread to avoid blocking the pipeline.
     static bool saved_once = false;
     if (!saved_once) {
-        save_raw_packed("packed_frame.bin", raw, expected_bytes, stream);
         saved_once = true;
+        // Snapshot to host on the current stream, then detach the write to a thread.
+        size_t save_bytes = expected_bytes;
+        auto host_buf = std::make_shared<std::vector<uint8_t>>(save_bytes);
+        cudaMemcpyAsync(host_buf->data(), raw, save_bytes,
+                        cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);   // sync once for the copy only
+        std::thread([host_buf, save_bytes]() {
+            std::ofstream ofs("packed_frame.bin", std::ios::binary);
+            ofs.write(reinterpret_cast<const char*>(host_buf->data()), save_bytes);
+            HOLOSCAN_LOG_INFO("[ADTFUnpackOp] saved packed_frame.bin ({} bytes)", save_bytes);
+        }).detach();
     }
 
     //--------------------------------------------------------------------------
     // 10. Unpack 5-byte/pixel → depth/conf/ab (uint16)
     //--------------------------------------------------------------------------
     unpack_kernel_launch(raw, depth, conf, ab, width, height, stream);
+    {
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            HOLOSCAN_LOG_ERROR("[ADTFUnpackOp] unpack_kernel launch error: {}",
+                               cudaGetErrorString(err));
+        }
+    }
 
     //--------------------------------------------------------------------------
     // 11. Convert to RGB (Jet + grayscale)
     //--------------------------------------------------------------------------
     jet_kernel_launch(depth, depth_rgb_ptr, size, stream);
+    {
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            HOLOSCAN_LOG_ERROR("[ADTFUnpackOp] jet_kernel launch error: {}",
+                               cudaGetErrorString(err));
+        }
+    }
     grayscale_kernel_launch(conf, conf_rgb_ptr, size, stream, 255.0f);   // conf: 8-bit range 0-255
     grayscale_kernel_launch(ab,   ab_rgb_ptr,   size, stream, 4096.0f);  // AB:   12-bit range 0-4096
+    {
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            HOLOSCAN_LOG_ERROR("[ADTFUnpackOp] grayscale_kernel launch error: {}",
+                               cudaGetErrorString(err));
+        }
+    }
 
     //--------------------------------------------------------------------------
     // 12. Emit output entity

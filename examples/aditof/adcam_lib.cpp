@@ -231,11 +231,13 @@ Adcam::Adcam(std::shared_ptr<hololink::DataChannel> hololink_channel,
       throw std::runtime_error(
           fmt::format("Adcam: unsupported adcam_mode {}", adcam_mode));
   }
-  width_  = ADCAM_MODE_TABLE[adcam_mode].width;
-  height_ = ADCAM_MODE_TABLE[adcam_mode].height;
+  width_           = ADCAM_MODE_TABLE[adcam_mode].width;
+  height_          = ADCAM_MODE_TABLE[adcam_mode].height;
+  pixel_width_     = ADCAM_MODE_TABLE[adcam_mode].pixel_width;
+  pixel_height_    = ADCAM_MODE_TABLE[adcam_mode].pixel_height;
 
-  HOLOSCAN_LOG_DEBUG("[ADCAM] Constructed mode={} width={} height={}",
-                     adcam_mode, width_, height_);
+  HOLOSCAN_LOG_DEBUG("[ADCAM] Constructed mode={} mipi={}x{} pixels={}x{}",
+                     adcam_mode, width_, height_, pixel_width_, pixel_height_);
 
   if (!hololink_) {
     throw std::runtime_error("Adcam: hololink is null");
@@ -734,6 +736,14 @@ uint32_t Adcam::get_width() {
 
 uint32_t Adcam::get_height() {
   return height_;
+}
+
+uint32_t Adcam::get_pixel_width() {
+  return pixel_width_;
+}
+
+uint32_t Adcam::get_pixel_height() {
+  return pixel_height_;
 }
 
 // -----------------------------------------------------------------------------
