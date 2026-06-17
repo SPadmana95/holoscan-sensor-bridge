@@ -100,7 +100,7 @@ ls examples/aditof/
 ./adcam_player --capture 1 --headless --frame-limit 100
 
 # Update firmware, then exit
-./adcam_player --firmwareUpdate /path/to/manifest.yaml
+./adcam_player --firmwareUpdate adi_manifest.yaml
 ```
 
 ---
@@ -179,20 +179,51 @@ get_status()                          Read 0x0020 and 0x0038; log chip status
 
 ### 5. Capture Pipeline (if `--capture 1`)
 
+`compose()` is an override of `holoscan::Application::compose()`. It is **never
+called directly** — the Holoscan framework calls it once inside `application->run()` to
+build the operator graph before the scheduler starts.
+
 ```
-HoloscanApplication::compose()
- ├─ probe_adcam_adtf3175()            Confirm sensor still reachable
- ├─ configure_converter()             Set CSI frame geometry (width × height)
- ├─ set_mipi()                        Configure MIPI lane speed + deskew
- ├─ set_mode()                        Set QMP capture mode register
- │
- ├─ [ROCE path]  RoceReceiverOp       Receive frames over InfiniBand/ROCE
- │     or
- │  [Linux path] LinuxReceiverOp      Receive frames over standard network
- │
- ├─ CsiToBayerOp                      Convert CSI framing → Bayer buffer (GPU)
- ├─ ADTFUnpackOp                      Unpack 5 byte/pixel → Depth, AB, Conf
- └─ HolovizOp                         Visualize three planes side-by-side
+main()
+ └─ holoscan::make_application<HoloscanApplication>(headless, ..., adcam_inst, frame_limit)
+      └─ application->run()
+           │
+           ├─ HoloscanApplication::compose()   ← called once by the framework
+           │     │
+           │     ├─ Step 1: make_condition<CountCondition | BooleanCondition>
+           │     │           frame limit or run-forever condition
+           │     │
+           │     ├─ Step 2: make_resource<BlockMemoryPool>("csi_to_bayer_pool")
+           │     │           device memory pool (2 blocks, uint16) for CSI→Bayer
+           │     │
+           │     ├─ Step 3: make_operator<CsiToBayerOp>("csi_to_bayer")
+           │     │           allocator=csi_to_bayer_pool, cuda_device_ordinal
+           │     │
+           │     ├─ Step 4: Camera initialization and configuration
+           │     │           probe_adcam_adtf3175()     — confirm sensor reachable
+           │     │           configure_converter()      — set CSI frame geometry (width × height)
+           │     │           set_mipi()                 — configure MIPI lane speed + deskew
+           │     │           set_mode()                 — set QMP capture mode register
+           │     │           get_csi_length()           — compute frame_size for receiver
+           │     │
+           │     ├─ Step 5: make_operator<RoceReceiverOp | LinuxReceiverOp>("receiver")
+           │     │           device_start → Adcam::start()
+           │     │           device_stop  → Adcam::stop()
+           │     │
+           │     ├─ Step 6: make_resource<BlockMemoryPool>("ADTF_output_pool")
+           │     │           device memory pool (8 blocks, uint16) for ADTFUnpackOp
+           │     │
+           │     ├─ Step 7: make_operator<ADTFUnpackOp>("ADIToF_data")
+           │     │           width=512, height=512, num_planes=3
+           │     │
+           │     ├─ Step 8: make_operator<HolovizOp>("holoviz")
+           │     │           Depth (left) / ActiveBrightness (center) / Conf (right)
+           │     │
+           │     └─ Step 9: add_flow × 3  — wire the operator graph
+           │                 receiver → csi_to_bayer → ADIToF_data → holoviz
+           │
+           └─ GXF Scheduler starts
+                └─ each frame: ADTFUnpackOp::compute() is called automatically
 ```
 
 Stream start/stop callbacks:
@@ -238,7 +269,7 @@ declared in the header and called from `adcam_unpack_op.cpp`:
 
 | Kernel | Launcher | Purpose |
 |---|---|---|
-| `shift_and_cast_kernel` | `shift_and_cast_kernel()` | Converts `uint16_t` → `uint8_t` by right-shifting 8 bits (CSI buffer arrives as 16-bit words) |
+| `shift_and_cast_kernel` | `shift_and_cast_kernel(..., cudaStream_t)` | Converts `uint16_t` → `uint8_t` by right-shifting 8 bits (CSI buffer arrives as 16-bit words); launcher is a C++ overload of the same name with an extra `cudaStream_t` parameter |
 | `unpack_kernel` | `unpack_kernel_launch()` | Splits 5 B/px packed stream → separate `depth[]`, `conf[]`, `ab[]` `uint16_t` arrays — one thread per pixel |
 | `jet_kernel` | `jet_kernel_launch()` | Maps `depth[]` → RGB using a 256-entry Jet LUT stored in CUDA `__constant__` memory; depth normalized to 0–4000 mm |
 | `grayscale_kernel` | `grayscale_kernel_launch()` | Maps `ab[]` / `conf[]` → grayscale RGB; normalized to 0–4096 |
@@ -318,6 +349,31 @@ Contains the Holoscan lifecycle methods and GXF memory management:
 | `setup()` | Registers input/output ports and parameters with the Holoscan framework |
 | `start()` | Computes `frame_size_ = width × height` once at pipeline startup |
 | `compute()` | Called every frame — full pipeline orchestration (see below) |
+
+**How `compute()` is invoked — framework dispatch**
+
+`compute()` is **never called directly** from `adcam_player.cpp`. The Holoscan
+framework calls it automatically on every incoming frame:
+
+```
+adcam_player.cpp — HoloscanApplication::compose()
+ │
+ ├─ make_operator<ADTFUnpackOp>("ADIToF_data", ...)   // register operator
+ │
+ ├─ add_flow(csi_to_bayer_operator, ADIToF_data,      // wire input
+ │           {{"output", "input"}})
+ │
+ └─ add_flow(ADIToF_data, visualizer,                 // wire output
+             {{"output", "receivers"}})
+
+app.run()
+ └─ GXF Scheduler
+      └─ (each frame, triggered when CsiToBayerOp emits)
+           └─ ADTFUnpackOp::compute(op_input, op_output, context)
+```
+
+`adcam_player.cpp` only declares *what* to run and *how operators connect* —
+the GXF scheduler handles *when* `compute()` is called.
 
 **`compute()` step-by-step per frame:**
 
