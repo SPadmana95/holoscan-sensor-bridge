@@ -216,9 +216,7 @@ bool Adsd3500::adsd3500_flash(const std::vector<uint8_t>& file_data,
             std::cerr << "Master firmware update failed." << std::endl;
             return false;
         }
-        /* Remove this line to continue the slave firmware update*/
-    std::cout << "[INFO] Firmware update skipped (remove this line to enable firmware flashing)" << std::endl;
-    return false;
+
         if (!this->updateAdsd3500SlaveFirmware(slave_fw.data(), slave_len, force, slave_expected_crc)) {
             std::cerr << "Slave firmware update failed." << std::endl;
             return false;
@@ -500,10 +498,12 @@ bool Adsd3500::updateAdsd3500SlaveFirmware(uint8_t *fw_data, uint32_t fw_len, bo
 
     std::cout << std::endl;
     std::cout << "===== updateAdsd3500SlaveFirmware: Starting Slave Firmware Update =====" << std::endl;
+    /* Commented out slave chip ID read for now since the master fails to read the slave chip ID.
     std::cout << "[SLAVE] ";
     if (!adcam_->get_ChipID(GET_SLAVE_CHIP_ID_CMD)) {
         std::cerr << "[SLAVE] Failed to read Chip ID" << std::endl;
     }
+    */
     sleep(1);
 
     std::cout << std::dec;
@@ -716,10 +716,12 @@ bool Adsd3500::updateAdsd3500SlaveFirmware(uint8_t *fw_data, uint32_t fw_len, bo
     }
     std::cout << std::endl;
 
+    /* Commented out slave chip ID read for now since the master fails to read the slave chip ID.
     std::cout << "[SLAVE] ";
     if (!adcam_->get_ChipID(GET_SLAVE_CHIP_ID_CMD)) {
         std::cerr << "[SLAVE] Failed to read Chip ID" << std::endl;
     }
+    */
     sleep(1);
 
     if (!adcam_->switch_from_standard_to_burst()) {
@@ -747,11 +749,12 @@ bool Adsd3500::updateAdsd3500SlaveFirmware(uint8_t *fw_data, uint32_t fw_len, bo
     }
     sleep(1);
 
+    /* Commented out slave chip ID read for now since the master fails to read the slave chip ID.
     std::cout << std::endl << "[SLAVE] ";
     if (!adcam_->get_ChipID(GET_SLAVE_CHIP_ID_CMD)) {
         std::cerr << "[SLAVE] Failed to read Chip ID" << std::endl;
     }
-
+    */
     return true;
 }
 
