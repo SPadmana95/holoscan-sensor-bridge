@@ -417,7 +417,7 @@ void Adcam::set_mipi(std::shared_ptr<hololink::sensors::Adcam> adcam_inst) {
   log_reply_prefix("Chip Status", resp);
 
   // Set MIPI lane speed / mode value as in original implementation.
-  uint16_t reg[] = {2, 0x0031, 0x0004};  // 1 Gbps configuration
+  uint16_t reg[] = {2, MIPI_OUTPUT_SPEED_CMD, MIPI_SPEED_1GBPS};  // 1 Gbps configuration
   if (!adcam_inst->set_register16_no_response(reg)) {
     HOLOSCAN_LOG_ERROR("set_mipi: failed to set MIPI lane speed");
   }
@@ -426,7 +426,7 @@ void Adcam::set_mipi(std::shared_ptr<hololink::sensors::Adcam> adcam_inst) {
 
   // Enable deskew
   HOLOSCAN_LOG_DEBUG("Enabling deskew");
-  uint16_t reg1[] = {2, 0x00AB, 0x0001};
+  uint16_t reg1[] = {2, DESKEW_ENABLE_CMD, ENABLE_VAL};
   if (!set_register16_no_response(reg1)) {
     HOLOSCAN_LOG_ERROR("set_mipi: failed to enable deskew");
   }
@@ -478,7 +478,7 @@ void Adcam::get_status() {
   auto resp = set_register16_response(reg, 2);
   log_reply_prefix("Chip Status", resp);
 
-  uint16_t reg1[] = {1, 0x0038};
+  uint16_t reg1[] = {1, GET_IMAGER_ERROR_CMD};
   resp = set_register16_response(reg1, 2);
   log_reply_prefix("0x0038 Status", resp);
 }
@@ -575,7 +575,7 @@ void Adcam::get_chip_status() {
 void Adcam::stream_on() {
   HOLOSCAN_LOG_DEBUG("Setting Clock continuous mode in stream_on");
 
-  uint16_t reg[] = {2, 0x00A9, 0x0001};
+  uint16_t reg[] = {2, MIPI_CLK_CONTINUOUS_CMD, ENABLE_VAL};
   if (!set_register16_no_response(reg)) {
     HOLOSCAN_LOG_ERROR("stream_on: failed to set clock continuous mode");
   }
@@ -583,8 +583,7 @@ void Adcam::stream_on() {
 
   HOLOSCAN_LOG_DEBUG("Turning ON Streaming");
 
-  // Preserved exactly from original code.
-  uint16_t reg1[] = {2, 0x00A, 0x00C5};
+  uint16_t reg1[] = {2, STREAM_ON_CMD, STREAM_ON_VAL};
   if (!set_register16_no_response(reg1)) {
     HOLOSCAN_LOG_ERROR("stream_on: failed to enable streaming");
   }
@@ -596,8 +595,7 @@ void Adcam::stream_on() {
 void Adcam::stream_off() {
   HOLOSCAN_LOG_DEBUG("Turning OFF Streaming");
 
-  // Preserved exactly from original code.
-  uint16_t reg[] = {2, 0x00A, 0x00C5};
+  uint16_t reg[] = {2, STREAM_OFF_CMD, STREAM_OFF_VAL};
   if (!set_register16_no_response(reg)) {
     HOLOSCAN_LOG_ERROR("stream_off: failed to disable streaming");
   }
@@ -627,7 +625,7 @@ void Adcam::get_Status() {
 }
 
 std::vector<uint8_t> Adcam::get_ClockContinuousMode() {
-  uint16_t reg[] = {1, 0x00AA};
+  uint16_t reg[] = {1, GET_MIPI_CLK_CONTINUOUS_CMD};
   auto resp = set_register16_response(reg, 2);
 
   HOLOSCAN_LOG_DEBUG("Clock continuous mode bytes={}", resp.size());
@@ -678,8 +676,8 @@ void Adcam::adcam_reset_power_on() {
   // Release reset.
   pf_gpio_.configure_reset_high(reset_pin_);
 
-  HOLOSCAN_LOG_INFO("booting up ADSD, wait for 10 seconds");
-  std::this_thread::sleep_for(std::chrono::seconds(10));
+  HOLOSCAN_LOG_INFO("booting up ADCAM, wait for 5 seconds");
+  std::this_thread::sleep_for(std::chrono::seconds(5));
 }
 
 void Adcam::adcam_hard_reset() {
@@ -690,8 +688,8 @@ void Adcam::adcam_hard_reset() {
   HOLOSCAN_LOG_DEBUG("ADCAM - Making Reset HIGH ONLY");
   pf_gpio_.configure_reset_high(reset_pin_);
 
-  HOLOSCAN_LOG_INFO("Waiting 10 secs after reset");
-  std::this_thread::sleep_for(std::chrono::seconds(10));
+  HOLOSCAN_LOG_INFO("Waiting 5 secs after reset");
+  std::this_thread::sleep_for(std::chrono::seconds(5));
 }
 
 void Adcam::profile_fpga_perf(uint32_t pin) {
@@ -755,7 +753,7 @@ void Adcam::start(void) {
   // Set and check clock continuous mode before enabling streaming.
   HOLOSCAN_LOG_DEBUG("Setting Clock continuous mode in start");
 
-  uint16_t reg[] = {2, 0x00A9, 0x0001};
+  uint16_t reg[] = {2, MIPI_CLK_CONTINUOUS_CMD, ENABLE_VAL};
   if (!set_register16_no_response(reg)) {
     HOLOSCAN_LOG_ERROR("start: failed to set clock continuous mode");
   }
@@ -763,8 +761,8 @@ void Adcam::start(void) {
 
   HOLOSCAN_LOG_INFO("Turning ON Streaming check the timestamp");
 
-  // Original start path uses 0x00AD / 0x00C5.
-  uint16_t reg_stream_mode_on[] = {2, 0x00AD, 0x00C5};
+  // Original start path uses STREAM_ON_CMD / STREAM_ON_VAL.
+  uint16_t reg_stream_mode_on[] = {2, STREAM_ON_CMD, STREAM_ON_VAL};
   if (!set_register16_no_response(reg_stream_mode_on)) {
     HOLOSCAN_LOG_ERROR("start: failed to enable streaming");
   }
@@ -776,8 +774,8 @@ void Adcam::start(void) {
 void Adcam::stop(void) {
   HOLOSCAN_LOG_INFO("Turning OFF Streaming check the timestamp");
 
-  // Original stop path uses 0x000C / 0x0002.
-  uint16_t reg_stream_mode_off[] = {2, 0x000C, 0x0002};
+  // Original stop path uses STREAM_OFF_CMD / STREAM_OFF_VAL.
+  uint16_t reg_stream_mode_off[] = {2, STREAM_OFF_CMD, STREAM_OFF_VAL};
   if (!set_register16_no_response(reg_stream_mode_off)) {
     HOLOSCAN_LOG_ERROR("stop: failed to disable streaming");
   }

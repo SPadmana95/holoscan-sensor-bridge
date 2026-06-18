@@ -26,6 +26,23 @@
 #define GET_SLAVE_FIRMWARE_COMMAND  0x04
 #define SET_SWITCH_TO_BURST_MODE    0x0019
 
+#define STREAM_ON_CMD               0x00AD
+#define STREAM_ON_VAL               0x00C5
+
+#define STREAM_OFF_CMD              0x000C
+#define STREAM_OFF_VAL              0x0002
+
+#define ENABLE_VAL                  0x0001
+
+#define MIPI_CLK_CONTINUOUS_CMD     0x00A9
+#define MIPI_OUTPUT_SPEED_CMD       0x0031
+#define DESKEW_ENABLE_CMD           0x00AB
+#define GET_IMAGER_ERROR_CMD        0x0038
+#define GET_MIPI_CLK_CONTINUOUS_CMD 0x00AA
+
+#define MIPI_SPEED_1_5_GBPS         0x0003
+#define MIPI_SPEED_1GBPS            0x0004
+
 #include <cstdint>
 #include <getopt.h>
 #include <iostream>

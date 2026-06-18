@@ -96,8 +96,7 @@ void ADTFUnpackOp::compute(holoscan::InputContext& op_input,
 
     static int frame_count = 0;
     ++frame_count;
-    HOLOSCAN_LOG_INFO("[ADTFUnpackOp] compute() frame #{}", frame_count);
-    fflush(stdout);
+    HOLOSCAN_LOG_DEBUG("[ADTFUnpackOp] compute() frame #{}", frame_count);
 
     //--------------------------------------------------------------------------
     // 1. Receive input entity
