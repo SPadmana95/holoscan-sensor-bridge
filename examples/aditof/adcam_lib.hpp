@@ -36,12 +36,15 @@
 
 #define MIPI_CLK_CONTINUOUS_CMD     0x00A9
 #define MIPI_OUTPUT_SPEED_CMD       0x0031
+#define ADSD3500_CMD_GET_CHIP_INFO  0x0032
 #define DESKEW_ENABLE_CMD           0x00AB
 #define GET_IMAGER_ERROR_CMD        0x0038
 #define GET_MIPI_CLK_CONTINUOUS_CMD 0x00AA
 
 #define MIPI_SPEED_1_5_GBPS         0x0003
 #define MIPI_SPEED_1GBPS            0x0004
+
+#define LOW_BYTE_MASK               0x00FF
 
 #include <cstdint>
 #include <getopt.h>
@@ -120,18 +123,71 @@ constexpr uint16_t adcam_make_mode_settings(const AdcamModeConfig& cfg) {
     return w;
 }
 
-//           {mipi_w, mipi_h, px_w, px_h, phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi}
-constexpr AdcamModeConfig ADCAM_MODE_TABLE[] = {
-    /* 0 */ {3072, 1707, 1024, 1024,  6,  6,  2,    0,   1,   2},  // → 0x2807
-    /* 1 */ {3072, 1707, 1024, 1024,  6,  6,  2,    0,   1,   2},  // → 0x2807
-    //         QMP modes — no padding; frame layout: SF1=depth+conf(3B/px) + SF2=AB(2B/px) = 5 bytes/pixel.
-    /* 2 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
-    /* 3 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
-    //         MP mode — TODO: verify MIPI dims for mode 4 on hardware; no confidence channel.
-    /* 4 */ {3072, 1707, 1024, 1024,  6,  6,  0,    1,   1,   2},  // → 0x200F
-    //         QMP modes — no padding
-    /* 5 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
-    /* 6 */ {2560,  512,  512,  512,  6,  6,  2,    1,   1,   2},  // → 0x280F
+// Standard capture modes for ADSD3100.
+// Each entry maps a mode index to its MIPI frame geometry, pixel dimensions,
+// and imager settings used to build the Set Imager Mode register word.
+//
+// Column layout:
+//   { mipi_w, mipi_h,  px_w,  px_h,  phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi }
+//
+// Mode types:
+//   MP  (Mega Pixel)       : 1024×1024 pixels, MIPI frame 3072×1707, requires 2 Gbps
+//   QMP (Quarter Mega Pixel):  512×512  pixels, MIPI frame 2560×512,  requires 1 Gbps
+//
+// Frame layout (5 bytes/pixel):
+//   Sub-frame 1 (SF1) = depth + confidence (3 B/pixel)
+//   Sub-frame 2 (SF2) = active brightness  (2 B/pixel)
+//
+// Set Imager Mode word (shown as comment per row):
+//   0x2807 = MP,  depth+AB+conf, 16-bit depth, 16-bit AB, 8-bit conf, no AB avg
+//   0x280F = QMP, depth+AB+conf, 16-bit depth, 16-bit AB, 8-bit conf, AB avg on
+//   0x200F = MP,  depth+AB only, 16-bit depth, 16-bit AB, no conf,    AB avg on
+//
+constexpr AdcamModeConfig adsd3100_standardModes[] = {
+    // ---- MP modes (1024×1024, 2 Gbps MIPI) ----
+    /* Mode 0 */ {3072, 1707, 1024, 1024,  6,  6,  2,  0,  1,  2},  // → 0x2807  depth+AB+conf, no AB avg
+    /* Mode 1 */ {3072, 1707, 1024, 1024,  6,  6,  2,  0,  1,  2},  // → 0x2807  depth+AB+conf, no AB avg
+
+    // ---- QMP modes (512×512, 1 Gbps MIPI) ----
+    /* Mode 2 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 3 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
+
+    // ---- MP mode, no confidence channel (1024×1024, 2 Gbps MIPI) ----
+    /* Mode 4 */ {3072, 1707, 1024, 1024,  6,  6,  0,  1,  1,  2},  // → 0x200F  depth+AB only, AB avg on
+
+    // ---- QMP modes (512×512, 1 Gbps MIPI) ----
+    /* Mode 5 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 6 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
+};
+
+// Standard capture modes for ADTF3066.
+// Array is indexed directly by mode number (0–9) so table[mode] gives the
+// correct geometry for that mode index.
+//
+// Column layout:
+//   { mipi_w, mipi_h,  px_w,  px_h,  phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi }
+//
+// Mode types:
+//   VGA  (Video Graphics Array) :  512×640 pixels, MIPI frame 2560×640,  1 Gbps  → modes 0,1,4,7
+//   QVGA (Quarter VGA)          :  256×320 pixels, MIPI frame 1280×320,  1 Gbps  → modes 2,3,5,6,8,9
+//
+// Frame layout (5 bytes/pixel):
+//   Sub-frame 1 (SF1) = depth + confidence (3 B/pixel)
+//   Sub-frame 2 (SF2) = active brightness  (2 B/pixel)
+//
+// Imager settings (all modes): depth+AB+conf, 16-bit depth, 16-bit AB, 8-bit conf, AB avg on
+//
+constexpr AdcamModeConfig adtf3066_standardModes[] = {
+    /* Mode 0 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 1 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 2 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 3 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 4 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 5 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 6 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 7 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 8 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 9 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
 };
 
 enum class I2CExpanderOutputEN : uint8_t {
@@ -196,6 +252,7 @@ class Adcam {
   void read_nvm_config();
   void get_status();
   void get_only_status();
+  void get_imager_type_and_ccb_version();
 
   int probe_adcam_adtf3175();
   std::vector<uint8_t> force_stop_burst_mode();
@@ -244,6 +301,8 @@ class Adcam {
   uint32_t get_height();          // MIPI frame line count
   uint32_t get_pixel_width();     // actual image pixels per row
   uint32_t get_pixel_height();    // actual image pixel rows
+  uint32_t get_mode();            // current capture mode index
+  uint16_t get_imager_type();     // detected imager type (1=ADSD3100, 2=ADSD3030, 3=ADTF3080, 4=ADTF3066)
 
   void start();
   void stop();
@@ -265,13 +324,14 @@ class Adcam {
   std::shared_ptr<hololink::Hololink> hololink_{nullptr};
   std::shared_ptr<Hololink::I2c> i2c_{nullptr};
 
-  int width_{2560};            // MIPI frame line width — set from ADCAM_MODE_TABLE
-  int height_{512};            // MIPI frame line count  — set from ADCAM_MODE_TABLE
-  int pixel_width_{512};       // actual image pixels per row — set from ADCAM_MODE_TABLE
-  int pixel_height_{512};      // actual image pixel rows     — set from ADCAM_MODE_TABLE
+  int width_{2560};            // MIPI frame line width — set from mode table
+  int height_{512};            // MIPI frame line count  — set from mode table
+  int pixel_width_{512};       // actual image pixels per row — set from mode table
+  int pixel_height_{512};      // actual image pixel rows     — set from mode table
   int pixel_format_{0};
   int test_{0};
 
+  uint16_t imager_type_{0};    // 0=unknown, 1=ADSD3100, 2=ADSD3030, 3=ADTF3080, 4=ADTF3066
   uint32_t adcam_mode_{6};
   uint32_t reset_pin_{0};
 

@@ -135,6 +135,15 @@ public:
         // Frame size after CSI conversion
         const size_t frame_size = csi_to_bayer_operator->get_csi_length();
         HOLOSCAN_LOG_INFO("Acquire frame of size {}", frame_size);
+        // [DBG] Full sizing breakdown for MP/QMP analysis.
+        HOLOSCAN_LOG_INFO("[DBG compose] mode={} mipi={}x{} pixel={}x{}"
+                          " mipi_frame_bytes={} pixel_frame_bytes={} csi_frame_bytes={}",
+            adcam_inst->get_mode(),
+            adcam_inst->get_width(), adcam_inst->get_height(),
+            adcam_inst->get_pixel_width(), adcam_inst->get_pixel_height(),
+            adcam_inst->get_width() * adcam_inst->get_height(),
+            adcam_inst->get_pixel_width() * adcam_inst->get_pixel_height() * 5,
+            frame_size);
 
         //======================================================================
         // 5. Receiver operator (ROCE or Linux)
@@ -185,11 +194,16 @@ public:
         //======================================================================
         // 6. Memory pool for ADI ToF unpack operator
         //======================================================================
+        const size_t pool_block_size =
+            adcam_inst->get_width() * adcam_inst->get_height() * sizeof(uint16_t);
+        HOLOSCAN_LOG_INFO("[DBG compose] BlockMemoryPool block_size={} num_blocks=8"
+                          " total_pool_bytes={}",
+                          pool_block_size, pool_block_size * 8);
         auto device_allocator_adtf =
             make_resource<holoscan::BlockMemoryPool>(
                 "ADTF_output_pool",
                 /*storage_type=*/1,
-                adcam_inst->get_width() * adcam_inst->get_height() * sizeof(uint16_t),
+                pool_block_size,
                 /*num_blocks=*/8);
 
         //======================================================================
@@ -525,6 +539,7 @@ int main(int argc, char** argv)
         }
 
         adcam_inst->get_status();
+        adcam_inst->get_imager_type_and_ccb_version();
 
         //--------------------------------------------------------------------------
         // 4.5 Create and run Holoscan application

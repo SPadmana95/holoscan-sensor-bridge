@@ -101,7 +101,10 @@ void shift_and_cast_kernel(const uint16_t* in,
 //==============================================================================
 //  KERNEL: unpack_kernel
 //------------------------------------------------------------------------------
-//  Unpacks ADI ToF QMP v8.0.0+ two-subframe format:
+//  Unpacks ADI ToF 5-bytes/pixel packed format into three separate planes.
+//  Handles both MP and QMP modes.
+//
+//  Frame structure — same for MP and QMP:
 //
 //  Subframe 1 — Depth + Confidence interleaved (3 bytes/pixel):
 //      Byte 0: depth LSB
@@ -112,19 +115,34 @@ void shift_and_cast_kernel(const uint16_t* in,
 //      Byte 0: ab LSB
 //      Byte 1: ab MSB     → ab[i] = uint16 little-endian
 //
-//  Memory layout (total = 5 × width × height bytes):
+//  Memory layout (N = pixel_width × pixel_height pixels; total = N × 5 bytes):
 //
 //   ┌─────────────────────────────────────────────────────┐
 //   │  Subframe 1: [D1_L][D1_H][C1] [D2_L][D2_H][C2]...   │  3 × N bytes
 //   ├─────────────────────────────────────────────────────┤
 //   │  Subframe 2: [AB1_L][AB1_H] [AB2_L][AB2_H] ...      │  2 × N bytes
 //   └─────────────────────────────────────────────────────┘
-//   where N = width × height
+//   where N = pixel_width × pixel_height
+//         e.g. mode 6: N = 512 × 512 = 262,144 pixels  (QMP)
+//              mode 0: N = 1024 × 1024 = 1,048,576 pixels (MP)
 //
-//  raw   : uint8_t*   (device) — packed input (5 × N bytes)
-//  depth : uint16_t*  (device) — unpacked depth plane
-//  conf  : uint16_t*  (device) — unpacked confidence plane
-//  ab    : uint16_t*  (device) — unpacked active brightness plane
+//  MP modes (0, 1, 4) vs QMP modes (2, 3, 5, 6):
+//
+//    QMP: MIPI frame = N × 5 bytes exactly (no padding).
+//         pixel_width and pixel_height are read directly from adsd3100_standardModes.
+//
+//    MP:  MIPI frame = N × 5 + padding bytes.
+//         Modes 0 and 1: MIPI = 3072 × 1707 = 5,243,904 bytes
+//                        N = 1024 × 1024     = 1,048,576 pixels
+//                        padding = 5,243,904 - 5,242,880 = 1,024 zero bytes
+//         The kernel is launched with size = N (pixel count), so it only
+//         accesses bytes [0 .. N×5 - 1].  The trailing padding bytes are
+//         never read.
+//
+//  raw   : uint8_t*   (device) — packed input (≥ 5×N bytes)
+//  depth : uint16_t*  (device) — unpacked depth plane (N elements)
+//  conf  : uint16_t*  (device) — unpacked confidence plane (N elements)
+//  ab    : uint16_t*  (device) — unpacked active brightness plane (N elements)
 //==============================================================================
 __global__
 void unpack_kernel(const uint8_t* raw,
