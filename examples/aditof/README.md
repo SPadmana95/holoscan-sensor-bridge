@@ -71,6 +71,10 @@ cmake --build build -j$(nproc)
 
 ```bash
 ls examples/aditof/
+# cpp/                — C++ sources and CMakeLists.txt
+# python/             — Python helper scripts
+# adi_manifest.yaml   — Firmware download manifest (URL, size, MD5 for ADCAM_Fw_Dual_Update_X.Y.Z.bin)
+# README.md           — This file
 ```
 
 ### 5. Output binary
@@ -129,19 +133,42 @@ ls examples/aditof/
 | `--log-level <level>` | string | `info` | Log verbosity: `trace` `debug` `info` `warn` `error` `critical` `off` |
 | `-h`, `--help` | flag | — | Print usage |
 
-**Capture mode → frame geometry and imager settings** (from `ADCAM_MODE_TABLE` in `adcam_lib.hpp`):
+**Capture mode → frame geometry and imager settings**
 
-| Mode | `width_` (RAW_8 bytes/line) | `height_` (rows) | Actual pixels | `phase_depth_bits` | `ab_bits` | `confidence_bits` | `ab_averaging` | `depth_enable` | `output_mipi` |
-|------|---------------------------|-----------------|---------------|--------------------|-----------|-------------------|---------------|----------------|---------------|
-| 0 | 3072 | 1707 | 1024 × 1024 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 0 | 1 | 2 |
-| 1 | 3072 | 1707 | 1024 × 1024 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 0 | 1 | 2 |
-| 2 | 2560 | 512 | 512 × 512 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
-| 3 | 2560 | 512 | 512 × 512 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
-| 4 | 1024 | 1024 | 1024 × 1024 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
-| 5 | 2560 | 512 | 512 × 512 | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
-| **6** (default) | **2560** | **512** | **512 × 512** | 6 (16-bit) | 6 (16-bit) | 2 (8-bit) | 1 | 1 | 2 |
+The correct mode table is selected automatically at runtime via `get_imager_type_and_ccb_version()`
+after the sensor is detected. Two tables are defined in `adcam_lib.hpp`:
 
-`width_` = actual pixels × 5 bytes/pixel (RAW_8 MIPI encodes 1 byte/clock).
+#### `adsd3100_standardModes` — ADSD3100 / ADSD3030 / ADTF3080
+
+| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type | `ab_avg` | `conf_bits` | Word 2 |
+|------|-------------------|-------------|------------|------|---------|-------------|--------|
+| 0 | 3072 | 1707 | 1024 × 1024 | MP | 0 | 2 (8-bit) | `0x2807` |
+| 1 | 3072 | 1707 | 1024 × 1024 | MP | 0 | 2 (8-bit) | `0x2807` |
+| 2 | 2560 | 512 | 512 × 512 | QMP | 1 | 2 (8-bit) | `0x280F` |
+| 3 | 2560 | 512 | 512 × 512 | QMP | 1 | 2 (8-bit) | `0x280F` |
+| 4 | 3072 | 1707 | 1024 × 1024 | MP | 1 | 0 (off) | `0x200F` |
+| 5 | 2560 | 512 | 512 × 512 | QMP | 1 | 2 (8-bit) | `0x280F` |
+| **6** (default) | **2560** | **512** | **512 × 512** | QMP | 1 | 2 (8-bit) | `0x280F` |
+
+All modes: `phase_depth_bits`=6 (16-bit), `ab_bits`=6 (16-bit), `depth_enable`=1, `output_mipi`=2.
+MP modes require 2 Gbps MIPI; QMP modes require 1 Gbps MIPI.
+
+#### `adtf3066_standardModes` — ADTF3066
+
+| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type | Word 2 |
+|------|-------------------|-------------|------------|------|--------|
+| 0 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
+| 1 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
+| 2 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
+| 3 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
+| 4 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
+| 5 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
+| **6** (default) | **1280** | **320** | **256 × 320** | QVGA | `0x280F` |
+| 7 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
+| 8 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
+| 9 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
+
+All ADTF3066 modes: `phase_depth_bits`=6, `ab_bits`=6, `confidence_bits`=2, `ab_averaging`=1, `depth_enable`=1, `output_mipi`=2, 1 Gbps MIPI.
 
 **Imager settings field encoding:**
 
@@ -156,8 +183,9 @@ ls examples/aditof/
 
 **ADSD3500 Set Imager Mode command** — `set_mode()` in `adcam_lib.cpp`:
 
-`set_mode()` sends a two-word I²C command. Both words are built dynamically from
-`ADCAM_MODE_TABLE[adcam_mode_]` via `adcam_make_mode_settings()`:
+`set_mode()` sends a two-word I²C command. The correct mode table (`adsd3100_standardModes`
+or `adtf3066_standardModes`) is selected from `imager_type_` (set by `get_imager_type_and_ccb_version()`).
+Both words are built dynamically via `adcam_make_mode_settings()`:
 
 ```
 Word 1: 0xDAXX   — XX = mode number (e.g. mode 6 → 0xDA06)
@@ -175,11 +203,11 @@ Word 2: 0xYYYY   — bit-packed imager settings:
 
 Example computed values:
 
-| Modes | `phase_depth_bits` | `ab_bits` | `confidence_bits` | `ab_averaging` | Word 2 |
-|-------|--------------------|-----------|-------------------|---------------|--------|
+| Modes (ADSD3100) | `phase_depth_bits` | `ab_bits` | `confidence_bits` | `ab_averaging` | Word 2 |
+|------------------|--------------------|-----------|-------------------|---------------|--------|
 | 0, 1 | 6 | 6 | 2 | 0 | `0x2807` |
-| 2, 3, 4, 5, 6 | 6 | 6 | 2 | 1 | `0x280F` |
-
+| 2, 3, 5, 6 | 6 | 6 | 2 | 1 | `0x280F` |
+| 4 | 6 | 6 | 0 | 1 | `0x200F` |
 ---
 
 ## Execution Flow
@@ -224,14 +252,20 @@ Programmer::program_and_verify_images()
 ```
 After a successful update the process exits; `--capture` is not required.
 
-### 4. Sensor Probe
+### 4. Sensor Probe and Imager Detection
 
 ```
-get_ChipID(GET_MASTER_CHIP_ID_CMD)    Read register 0x0112; log Chip ID bytes
-probe_adcam_adtf3175()                Read 0x0112; check ID == {0x59, 0x31}
+get_ChipID(GET_MASTER_CHIP_ID_CMD)          Read register 0x0112; log Chip ID bytes
+probe_adcam_adtf3175()                      Read 0x0112; check ID == {0x59, 0x31}
  └─ returns 1 → prints "ADTF3175 Found"
     returns 0 → prints "ADTF3175 NOT Found" and exits
-get_status()                          Read 0x0020 and 0x0038; log chip status
+get_status()                                Read 0x0020 and 0x0038; log chip status
+get_imager_type_and_ccb_version()           Read register 0x0032 (ADSD3500_CMD_GET_CHIP_INFO)
+ └─ resp[0] (bits [15:8]) = Imager Type     1=ADSD3100, 2=ADSD3030, 3=ADTF3080, 4=ADTF3066
+ └─ resp[1] (bits  [7:0]) = CCB Version     1=Ver0, 2=Ver1, 3=Ver2, 4=Ver3
+ └─ Re-initializes width_/height_/pixel_width_/pixel_height_ from correct mode table
+    ADTF3066 → adtf3066_standardModes
+    others   → adsd3100_standardModes
 ```
 
 ### 5. Capture Pipeline (if `--capture 1`)
@@ -263,7 +297,7 @@ main()
            │     │           set_mode()                 — send Set Imager Mode command:
            │     │                                         Word 1: 0xDA00 | adcam_mode_
            │     │                                         Word 2: adcam_make_mode_settings()
-           │     │                                                  (built from ADCAM_MODE_TABLE)
+           │     │                                                  (table selected by imager_type_)
            │     │           get_csi_length()           — compute frame_size for receiver
            │     │
            │     ├─ Step 5: make_operator<RoceReceiverOp | LinuxReceiverOp>("receiver")
@@ -310,13 +344,13 @@ Stream start/stop callbacks:
 
 ## ADTFUnpackOp — Frame Unpacking
 
-`ADTFUnpackOp` is implemented across two source files and a shared header:
+`ADTFUnpackOp` is implemented across two source files and a shared header, all located under `cpp/`:
 
 | File | Compiler | Role |
 |---|---|---|
-| `adcam_unpack_op.hpp` | — | Shared declarations: CUDA kernel launcher prototypes + operator class definition |
-| `adcam_unpack_op.cu` | `nvcc` | GPU side — `__global__` CUDA kernels + launch wrapper functions |
-| `adcam_unpack_op.cpp` | `g++` | CPU side — Holoscan operator lifecycle + GXF memory management; calls the launch wrappers from the `.cu` |
+| `cpp/adcam_unpack_op.hpp` | — | Shared declarations: CUDA kernel launcher prototypes + operator class definition |
+| `cpp/adcam_unpack_op.cu` | `nvcc` | GPU side — `__global__` CUDA kernels + launch wrapper functions |
+| `cpp/adcam_unpack_op.cpp` | `g++` | CPU side — Holoscan operator lifecycle + GXF memory management; calls the launch wrappers from the `.cu` |
 
 Both object files are linked together into the `adcam_player` binary.
 
@@ -492,8 +526,8 @@ the GXF scheduler handles *when* `compute()` is called.
 | Parameter | Value | Description |
 |---|---|---|
 | `num_planes` | `3` | Depth + Active Brightness + Confidence |
-| `width` | `512` | Frame width in pixels |
-| `height` | `512` | Frame height in pixels |
+| `width` | `get_pixel_width()` | Frame width in pixels (set from mode table after imager detection) |
+| `height` | `get_pixel_height()` | Frame height in pixels (set from mode table after imager detection) |
 | `allocator` | `BlockMemoryPool` (8 blocks, device) | GPU memory pool for output tensors |
 | `in_tensor_name` | `""` | Unnamed input tensor from `CsiToBayerOp` |
 | `out_tensor_name` | `"output"` | Output port name |
@@ -501,9 +535,9 @@ the GXF scheduler handles *when* `compute()` is called.
 ### Full data flow — Pre-unpack to Display
 
 ```
-adcam_unpack_op.hpp        ← shared: kernel launcher prototypes + operator class
+cpp/adcam_unpack_op.hpp    ← shared: kernel launcher prototypes + operator class
         │
-        ├── adcam_unpack_op.cu    (nvcc)        adcam_unpack_op.cpp (g++)
+        ├── cpp/adcam_unpack_op.cu    (nvcc)    cpp/adcam_unpack_op.cpp (g++)
         │                                        ADTFUnpackOp::compute()
         │                                          │
         │   [INPUT]                                │  step 1: receive GXF entity
@@ -574,10 +608,12 @@ All steps run inside `ADTFUnpackOp::compute()` in `adcam_unpack_op.cpp`. Steps 1
 ### Steps to use the manifest YAML
 
 1. Obtain the firmware binary (`.bin`) for the ADSD3500 sensor.
-2. Compute the file size and MD5 checksum:
+   The default manifest (`adi_manifest.yaml`) references `ADCAM_Fw_Dual_Update_X.Y.Z.bin`
+   and will download it automatically from the ADI download server.
+2. Compute the file size and MD5 checksum (if using a custom binary):
    ```bash
-   wc -c firmware.bin          # file size in bytes
-   md5sum firmware.bin         # MD5 hash
+   wc -c ADCAM_Fw_Dual_Update_X.Y.Z.bin   # file size in bytes
+   md5sum ADCAM_Fw_Dual_Update_X.Y.Z.bin  # MD5 hash
    ```
 3. Fill in the values in the manifest YAML (`adi_manifest.yaml`) already provided:
    - `filename` — absolute or relative path to the firmware binary (or `url:` for remote fetch)
@@ -607,3 +643,5 @@ The updater will:
 | No frames received | MIPI not streaming | Verify `--captureMode` and `--resetPin` values |
 | `Firmware flash failed` | Invalid binary or I2C error | Check manifest MD5/size and sensor power |
 | Black/frozen Holoviz window | CUDA or IBV issue | Check `--ibv-name` and CUDA device availability |
+| `Imager Type: Unknown (raw=...)` | `get_imager_type_and_ccb_version()` returned unexpected value | Check byte order: `resp[0]`=Imager Type, `resp[1]`=CCB Version |
+| Wrong pixel dimensions | Imager not yet detected before `compose()` | Ensure `get_imager_type_and_ccb_version()` is called before `application->run()` |
