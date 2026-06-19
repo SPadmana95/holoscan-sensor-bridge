@@ -122,7 +122,7 @@ ls examples/aditof/
 | `--hololink <ip>` | string | `192.168.0.2` | IP address of the HSB |
 | `--resetAdcam <0\|1>` | int | `0` | Perform full power-on reset sequence |
 | `--resetPin <0-31>` | int | `0` | GPIO pin number used for camera reset |
-| `--captureMode <0-6>` | int | `6` | QMP capture mode — selects frame geometry (see table below) |
+| `--captureMode <n>` | int | `6` | Capture mode — selects frame geometry (see table below); valid modes depend on the detected imager type |
 | `--capture <0\|1>` | int | `0` | Start capture and display pipeline |
 | `--firmwareUpdate <file>` | string | — | Path to firmware manifest YAML |
 | `--headless` | flag | off | Run Holoviz without a display window |
@@ -138,35 +138,30 @@ ls examples/aditof/
 The correct mode table is selected automatically at runtime via `get_imager_type_and_ccb_version()`
 after the sensor is detected. Two tables are defined in `adcam_lib.hpp`:
 
-#### `adsd3100_standardModes` — ADSD3100 / ADSD3030 / ADTF3080
+#### `adsd3100_standardModes` — ADSD3100
 
-| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type | `ab_avg` | `conf_bits` | Word 2 |
-|------|-------------------|-------------|------------|------|---------|-------------|--------|
-| 0 | 3072 | 1707 | 1024 × 1024 | MP | 0 | 2 (8-bit) | `0x2807` |
-| 1 | 3072 | 1707 | 1024 × 1024 | MP | 0 | 2 (8-bit) | `0x2807` |
-| 2 | 2560 | 512 | 512 × 512 | QMP | 1 | 2 (8-bit) | `0x280F` |
-| 3 | 2560 | 512 | 512 × 512 | QMP | 1 | 2 (8-bit) | `0x280F` |
-| 4 | 3072 | 1707 | 1024 × 1024 | MP | 1 | 0 (off) | `0x200F` |
-| 5 | 2560 | 512 | 512 × 512 | QMP | 1 | 2 (8-bit) | `0x280F` |
-| **6** (default) | **2560** | **512** | **512 × 512** | QMP | 1 | 2 (8-bit) | `0x280F` |
+| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type |
+|------|-------------------|-------------|------------|------|
+| 0 | 3072 | 1707 | 1024 × 1024 | MP |
+| 1 | 3072 | 1707 | 1024 × 1024 | MP |
+| 2 | 2560 | 512 | 512 × 512 | QMP |
+| 3 | 2560 | 512 | 512 × 512 | QMP |
+| 5 | 2560 | 512 | 512 × 512 | QMP |
+| **6** (default) | **2560** | **512** | **512 × 512** | QMP |
 
 All modes: `phase_depth_bits`=6 (16-bit), `ab_bits`=6 (16-bit), `depth_enable`=1, `output_mipi`=2.
-MP modes require 2 Gbps MIPI; QMP modes require 1 Gbps MIPI.
+MP modes require 1.5 Gbps MIPI; QMP modes require 1 Gbps MIPI.
 
 #### `adtf3066_standardModes` — ADTF3066
 
-| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type | Word 2 |
-|------|-------------------|-------------|------------|------|--------|
-| 0 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
-| 1 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
-| 2 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
-| 3 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
-| 4 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
-| 5 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
-| **6** (default) | **1280** | **320** | **256 × 320** | QVGA | `0x280F` |
-| 7 | 2560 | 640 | 512 × 640 | VGA | `0x280F` |
-| 8 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
-| 9 | 1280 | 320 | 256 × 320 | QVGA | `0x280F` |
+| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type |
+|------|-------------------|-------------|------------|------|
+| 0 | 2560 | 640 | 512 × 640 | VGA |
+| 1 | 2560 | 640 | 512 × 640 | VGA |
+| 7 | 2560 | 640 | 512 × 640 | VGA |
+| 3 | 1280 | 320 | 256 × 320 | QVGA |
+| **6** (default) | **1280** | **320** | **256 × 320** | QVGA |
+| 8 | 1280 | 320 | 256 × 320 | QVGA |
 
 All ADTF3066 modes: `phase_depth_bits`=6, `ab_bits`=6, `confidence_bits`=2, `ab_averaging`=1, `depth_enable`=1, `output_mipi`=2, 1 Gbps MIPI.
 
@@ -207,7 +202,7 @@ Example computed values:
 |------------------|--------------------|-----------|-------------------|---------------|--------|
 | 0, 1 | 6 | 6 | 2 | 0 | `0x2807` |
 | 2, 3, 5, 6 | 6 | 6 | 2 | 1 | `0x280F` |
-| 4 | 6 | 6 | 0 | 1 | `0x200F` |
+
 ---
 
 ## Execution Flow
@@ -261,11 +256,11 @@ probe_adcam_adtf3175()                      Read 0x0112; check ID == {0x59, 0x31
     returns 0 → prints "ADTF3175 NOT Found" and exits
 get_status()                                Read 0x0020 and 0x0038; log chip status
 get_imager_type_and_ccb_version()           Read register 0x0032 (ADSD3500_CMD_GET_CHIP_INFO)
- └─ resp[0] (bits [15:8]) = Imager Type     1=ADSD3100, 2=ADSD3030, 3=ADTF3080, 4=ADTF3066
+ └─ resp[0] (bits [15:8]) = Imager Type     1=ADSD3100, 2=ADTF3066
  └─ resp[1] (bits  [7:0]) = CCB Version     1=Ver0, 2=Ver1, 3=Ver2, 4=Ver3
  └─ Re-initializes width_/height_/pixel_width_/pixel_height_ from correct mode table
+    ADSD3100 → adsd3100_standardModes
     ADTF3066 → adtf3066_standardModes
-    others   → adsd3100_standardModes
 ```
 
 ### 5. Capture Pipeline (if `--capture 1`)

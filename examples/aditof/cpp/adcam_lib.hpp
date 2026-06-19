@@ -46,6 +46,7 @@
 
 #define LOW_BYTE_MASK               0x00FF
 
+
 #include <cstdint>
 #include <getopt.h>
 #include <iostream>
@@ -69,6 +70,15 @@
 namespace hololink::sensors {
 
 // ---------------------------------------------------------------------------
+// Imager type values returned by ADSD3500 register 0x0032 (GET_CHIP_INFO).
+// resp[0] (bits [15:8]) contains the raw imager type code.
+// ---------------------------------------------------------------------------
+enum class AdcamImagerType : uint16_t {
+    ADSD3100 = 1,
+    ADTF3066 = 2,
+};
+
+// ---------------------------------------------------------------------------
 // QMP capture mode → frame geometry and Set Imager Mode parameters.
 //
 // Word 2 (0xYYYY) bit layout for the ADSD3500 Set Imager Mode command:
@@ -85,6 +95,7 @@ namespace hololink::sensors {
 //   Bits [13:12]: output_mipi        (number of MIPI lanes: 0, 1, or 2)
 // ---------------------------------------------------------------------------
 struct AdcamModeConfig {
+    int mode_number;   // capture mode index
     // MIPI frame dimensions — used for CSI converter configuration.
     int width;         // RAW_8 bytes per MIPI line
     int height;        // number of MIPI lines
@@ -128,7 +139,7 @@ constexpr uint16_t adcam_make_mode_settings(const AdcamModeConfig& cfg) {
 // and imager settings used to build the Set Imager Mode register word.
 //
 // Column layout:
-//   { mipi_w, mipi_h,  px_w,  px_h,  phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi }
+//   { mode_number, mipi_w, mipi_h,  px_w,  px_h,  phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi }
 //
 // Mode types:
 //   MP  (Mega Pixel)       : 1024×1024 pixels, MIPI frame 3072×1707, requires 2 Gbps
@@ -138,38 +149,28 @@ constexpr uint16_t adcam_make_mode_settings(const AdcamModeConfig& cfg) {
 //   Sub-frame 1 (SF1) = depth + confidence (3 B/pixel)
 //   Sub-frame 2 (SF2) = active brightness  (2 B/pixel)
 //
-// Set Imager Mode word (shown as comment per row):
-//   0x2807 = MP,  depth+AB+conf, 16-bit depth, 16-bit AB, 8-bit conf, no AB avg
-//   0x280F = QMP, depth+AB+conf, 16-bit depth, 16-bit AB, 8-bit conf, AB avg on
-//   0x200F = MP,  depth+AB only, 16-bit depth, 16-bit AB, no conf,    AB avg on
-//
 constexpr AdcamModeConfig adsd3100_standardModes[] = {
     // ---- MP modes (1024×1024, 2 Gbps MIPI) ----
-    /* Mode 0 */ {3072, 1707, 1024, 1024,  6,  6,  2,  0,  1,  2},  // → 0x2807  depth+AB+conf, no AB avg
-    /* Mode 1 */ {3072, 1707, 1024, 1024,  6,  6,  2,  0,  1,  2},  // → 0x2807  depth+AB+conf, no AB avg
+    /* Mode 0 */ { 0, 3072, 1707, 1024, 1024,  6,  6,  2,  0,  1,  2},  // depth+AB+conf, no AB avg
+    /* Mode 1 */ { 1, 3072, 1707, 1024, 1024,  6,  6,  2,  0,  1,  2},  // depth+AB+conf, no AB avg
 
     // ---- QMP modes (512×512, 1 Gbps MIPI) ----
-    /* Mode 2 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 3 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
-
-    // ---- MP mode, no confidence channel (1024×1024, 2 Gbps MIPI) ----
-    /* Mode 4 */ {3072, 1707, 1024, 1024,  6,  6,  0,  1,  1,  2},  // → 0x200F  depth+AB only, AB avg on
-
-    // ---- QMP modes (512×512, 1 Gbps MIPI) ----
-    /* Mode 5 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 6 */ {2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // → 0x280F  depth+AB+conf, AB avg on
+    /* Mode 2 */ { 2, 2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // depth+AB+conf, AB avg on
+    /* Mode 3 */ { 3, 2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // depth+AB+conf, AB avg on
+    /* Mode 5 */ { 5, 2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // depth+AB+conf, AB avg on
+    /* Mode 6 */ { 6, 2560,  512,  512,  512,  6,  6,  2,  1,  1,  2},  // depth+AB+conf, AB avg on
 };
 
 // Standard capture modes for ADTF3066.
-// Array is indexed directly by mode number (0–9) so table[mode] gives the
-// correct geometry for that mode index.
+// Entries are looked up by mode_number using adcam_find_mode() — the array is
+// not contiguous (some mode numbers are absent) so direct indexing is not used.
 //
 // Column layout:
-//   { mipi_w, mipi_h,  px_w,  px_h,  phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi }
+//   { mode_number, mipi_w, mipi_h,  px_w,  px_h,  phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi }
 //
 // Mode types:
-//   VGA  (Video Graphics Array) :  512×640 pixels, MIPI frame 2560×640,  1 Gbps  → modes 0,1,4,7
-//   QVGA (Quarter VGA)          :  256×320 pixels, MIPI frame 1280×320,  1 Gbps  → modes 2,3,5,6,8,9
+//   VGA  (Video Graphics Array) :  512×640 pixels, MIPI frame 2560×640,  1 Gbps  → modes 0,1,7
+//   QVGA (Quarter VGA)          :  256×320 pixels, MIPI frame 1280×320,  1 Gbps  → modes 2,3,5,6,8
 //
 // Frame layout (5 bytes/pixel):
 //   Sub-frame 1 (SF1) = depth + confidence (3 B/pixel)
@@ -178,17 +179,26 @@ constexpr AdcamModeConfig adsd3100_standardModes[] = {
 // Imager settings (all modes): depth+AB+conf, 16-bit depth, 16-bit AB, 8-bit conf, AB avg on
 //
 constexpr AdcamModeConfig adtf3066_standardModes[] = {
-    /* Mode 0 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 1 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 2 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 3 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 4 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 5 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 6 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 7 */ {2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 8 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
-    /* Mode 9 */ {1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  → 0x280F  depth+AB+conf, AB avg on
+    // ---- VGA modes (512×640, 1 Gbps MIPI) ----
+    /* Mode 0 */ { 0, 2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   depth+AB+conf, AB avg on
+    /* Mode 1 */ { 1, 2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   depth+AB+conf, AB avg on
+    /* Mode 7 */ { 7, 2560,  640,  512,  640,  6,  6,  2,  1,  1,  2},  // VGA   depth+AB+conf, AB avg on
+
+    // ---- QVGA modes (256×320, 1 Gbps MIPI) ----
+    /* Mode 3 */ { 3, 1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  depth+AB+conf, AB avg on
+    /* Mode 6 */ { 6, 1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  depth+AB+conf, AB avg on
+    /* Mode 8 */ { 8, 1280,  320,  256,  320,  6,  6,  2,  1,  1,  2},  // QVGA  depth+AB+conf, AB avg on
 };
+
+// Find the AdcamModeConfig entry with the given mode_number in a fixed-size table.
+// Returns nullptr if no entry with that mode_number exists.
+template <size_t N>
+inline const AdcamModeConfig* adcam_find_mode(const AdcamModeConfig (&table)[N], int mode_number) {
+    for (size_t i = 0; i < N; ++i) {
+        if (table[i].mode_number == mode_number) { return &table[i]; }
+    }
+    return nullptr;
+}
 
 enum class I2CExpanderOutputEN : uint8_t {
   OUTPUT_1 = 0b0001,
@@ -302,7 +312,7 @@ class Adcam {
   uint32_t get_pixel_width();     // actual image pixels per row
   uint32_t get_pixel_height();    // actual image pixel rows
   uint32_t get_mode();            // current capture mode index
-  uint16_t get_imager_type();     // detected imager type (1=ADSD3100, 2=ADSD3030, 3=ADTF3080, 4=ADTF3066)
+  uint16_t get_imager_type();     // detected imager type (ADSD3100 = 1 , ADTF3066 = 2)
 
   void start();
   void stop();
@@ -331,7 +341,7 @@ class Adcam {
   int pixel_format_{0};
   int test_{0};
 
-  uint16_t imager_type_{0};    // 0=unknown, 1=ADSD3100, 2=ADSD3030, 3=ADTF3080, 4=ADTF3066
+  uint16_t imager_type_{0};    // ADSD3100 =1 , ADTF3066 = 2
   uint32_t adcam_mode_{6};
   uint32_t reset_pin_{0};
 

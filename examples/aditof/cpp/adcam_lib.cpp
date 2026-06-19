@@ -227,28 +227,22 @@ Adcam::Adcam(std::shared_ptr<hololink::DataChannel> hololink_channel,
   (void)hololink_i2c_controller_address;
 
   // At construction the imager type is not yet known (requires I2C communication).
-  // Use adsd3100_standardModes for modes 0-6 and adtf3066_standardModes for
-  // modes 7-9 as a best-effort initialisation. Call get_imager_type_and_ccb_version()
-  // after hololink->start() to select the correct table and re-init geometry.
-  const AdcamModeConfig* init_table;
-  size_t                 init_table_size;
-
-  if (adcam_mode < std::size(adsd3100_standardModes)) {
-    init_table      = adsd3100_standardModes;
-    init_table_size = std::size(adsd3100_standardModes);
-  } else {
-    init_table      = adtf3066_standardModes;
-    init_table_size = std::size(adtf3066_standardModes);
+  // Search adsd3100_standardModes first, then adtf3066_standardModes, as a
+  // best-effort initialisation. Call get_imager_type_and_ccb_version() after
+  // hololink->start() to select the correct table and re-init geometry.
+  const AdcamModeConfig* init_cfg =
+      adcam_find_mode(adsd3100_standardModes, static_cast<int>(adcam_mode));
+  if (!init_cfg) {
+    init_cfg = adcam_find_mode(adtf3066_standardModes, static_cast<int>(adcam_mode));
   }
-
-  if (adcam_mode >= init_table_size) {
-      throw std::runtime_error(
-          fmt::format("Adcam: unsupported adcam_mode {}", adcam_mode));
+  if (!init_cfg) {
+    throw std::runtime_error(
+        fmt::format("Adcam: unsupported adcam_mode {}", adcam_mode));
   }
-  width_           = init_table[adcam_mode].width;
-  height_          = init_table[adcam_mode].height;
-  pixel_width_     = init_table[adcam_mode].pixel_width;
-  pixel_height_    = init_table[adcam_mode].pixel_height;
+  width_        = init_cfg->width;
+  height_       = init_cfg->height;
+  pixel_width_  = init_cfg->pixel_width;
+  pixel_height_ = init_cfg->pixel_height;
 
   HOLOSCAN_LOG_DEBUG("[ADCAM] Constructed mode={} mipi={}x{} pixels={}x{}",
                      adcam_mode, width_, height_, pixel_width_, pixel_height_);
@@ -450,12 +444,30 @@ void Adcam::set_mode() {
   // Build the two-word Set Imager Mode command:
   //   Word 1: 0xDAXX  — XX = imager mode number (0-10)
   //   Word 2: 0xYYYY  — dynamically computed from per-mode field configuration
-  const AdcamModeConfig* table = (imager_type_ == 4)
-      ? adtf3066_standardModes
-      : adsd3100_standardModes;
+  auto imager_enum = static_cast<AdcamImagerType>(imager_type_);
+  const char* imager_str = (imager_enum == AdcamImagerType::ADSD3100) ? "ADSD3100"
+                         : (imager_enum == AdcamImagerType::ADTF3066) ? "ADTF3066"
+                         :                                              "Unknown";
+  const AdcamModeConfig* cfg = nullptr;
+  switch (imager_enum) {
+    case AdcamImagerType::ADSD3100:
+      cfg = adcam_find_mode(adsd3100_standardModes, static_cast<int>(adcam_mode_));
+      break;
+    case AdcamImagerType::ADTF3066:
+      cfg = adcam_find_mode(adtf3066_standardModes, static_cast<int>(adcam_mode_));
+      break;
+    default:
+      throw std::runtime_error(
+          fmt::format("set_mode: unsupported imager type (raw={})", imager_type_));
+  }
+  if (!cfg) {
+    throw std::runtime_error(
+        fmt::format("set_mode: mode {} not found for imager {} (raw={})",
+                    adcam_mode_, imager_str, imager_type_));
+  }
 
   uint16_t mode_reg     = static_cast<uint16_t>(0xDA00 | (adcam_mode_ & 0xFF));
-  uint16_t mode_setting = adcam_make_mode_settings(table[adcam_mode_]);
+  uint16_t mode_setting = adcam_make_mode_settings(*cfg);
 
   HOLOSCAN_LOG_INFO("Setting imager mode={} reg=0x{:04X} settings=0x{:04X}",
                      adcam_mode_, mode_reg, mode_setting);
@@ -512,7 +524,7 @@ void Adcam::get_only_status() {
 void Adcam::get_imager_type_and_ccb_version() {
   // Write 0x0032 to trigger the read; response is 4 bytes.
   //   Bits  [7:0]  = CCB Version  (1 = Version 0, 2 = Version 1, 3 = Version 2, 4 = Version 3)
-  //   Bits [15:8]  = Imager Type  (1 = ADSD3100,  2 = ADSD3030,  3 = ADTF3080,  4 = ADTF3066)
+  //   Bits [15:8]  = Imager Type  (1 = ADSD3100,  2 = ADTF3066)
   // Response is a single 16-bit word: resp[0] = CCB Version, resp[1] = Imager Type.
   uint16_t reg[] = {1, ADSD3500_CMD_GET_CHIP_INFO};
   auto resp = set_register16_response(reg, 2);
@@ -534,40 +546,45 @@ void Adcam::get_imager_type_and_ccb_version() {
                          : (ccb_version  == 3) ? "Version 2"
                          : (ccb_version  == 4) ? "Version 3"
                          :                       "Unknown";
-  const char* imager_str = (imager_type_ == 1) ? "ADSD3100"
-                         : (imager_type_ == 2) ? "ADSD3030"
-                         : (imager_type_ == 3) ? "ADTF3080"
-                         : (imager_type_ == 4) ? "ADTF3066"
-                         :                      "Unknown";
+
+  auto imager_enum = static_cast<AdcamImagerType>(imager_type_);
+  const char* imager_str = (imager_enum == AdcamImagerType::ADSD3100) ? "ADSD3100"
+                         : (imager_enum == AdcamImagerType::ADTF3066) ? "ADTF3066"
+                         :                                              "Unknown";
 
   HOLOSCAN_LOG_INFO("Imager Type: {} (raw={}), CCB Version: {} (raw={})",
                     imager_str, imager_type_, ccb_str, ccb_version);
 
   // Re-initialize frame geometry from the appropriate mode table.
   const AdcamModeConfig* mode_cfg = nullptr;
-  size_t                 table_size = 0;
 
-  if (imager_type_ == 4) {
-    // ADTF3066: VGA/QVGA modes indexed 0-8 sequentially in adtf3066_standardModes.
-    mode_cfg   = adtf3066_standardModes;
-    table_size = std::size(adtf3066_standardModes);
-  } else {
-    // ADSD3100 / ADSD3030 / ADTF3080 / unknown: fall back to ADSD3100 table.
-    mode_cfg   = adsd3100_standardModes;
-    table_size = std::size(adsd3100_standardModes);
+  switch (imager_enum) {
+    case AdcamImagerType::ADSD3100:
+      // ADSD3100: MP and QMP modes in adsd3100_standardModes.
+      mode_cfg = adcam_find_mode(adsd3100_standardModes, static_cast<int>(adcam_mode_));
+      break;
+    case AdcamImagerType::ADTF3066:
+      // ADTF3066: VGA and QVGA modes in adtf3066_standardModes.
+      mode_cfg = adcam_find_mode(adtf3066_standardModes, static_cast<int>(adcam_mode_));
+      break;
+    default:
+      HOLOSCAN_LOG_ERROR("get_imager_type_and_ccb_version: unsupported imager type (raw={})",
+                         imager_type_);
+      throw std::runtime_error(
+          fmt::format("Unsupported imager type (raw={})", imager_type_));
   }
 
-  if (adcam_mode_ >= table_size) {
-    HOLOSCAN_LOG_ERROR("get_imager_type_and_ccb_version: adcam_mode_={} out of range for "
-                       "imager {} (table size={}); keeping current geometry",
-                       adcam_mode_, imager_str, table_size);
+  if (!mode_cfg) {
+    HOLOSCAN_LOG_ERROR("get_imager_type_and_ccb_version: mode {} not found for "
+                       "imager {}; keeping current geometry",
+                       adcam_mode_, imager_str);
     return;
   }
 
-  width_        = mode_cfg[adcam_mode_].width;
-  height_       = mode_cfg[adcam_mode_].height;
-  pixel_width_  = mode_cfg[adcam_mode_].pixel_width;
-  pixel_height_ = mode_cfg[adcam_mode_].pixel_height;
+  width_        = mode_cfg->width;
+  height_       = mode_cfg->height;
+  pixel_width_  = mode_cfg->pixel_width;
+  pixel_height_ = mode_cfg->pixel_height;
 
   HOLOSCAN_LOG_INFO("Mode table selected: {} — mode={} mipi={}x{} pixel={}x{}",
                     imager_str, adcam_mode_, width_, height_, pixel_width_, pixel_height_);

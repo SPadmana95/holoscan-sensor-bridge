@@ -348,7 +348,7 @@ int main(int argc, char** argv)
             if (opt->name == std::string("captureMode")) {
                 adcam_mode = std::stoi(argument);
 
-                if (adcam_mode <0 || adcam_mode > 6)
+                if (adcam_mode <0 || adcam_mode > 9)
                 {
                     throw std::runtime_error(fmt::format("Unhandled captureMode \"{}\"", adcam_mode));
                 }
@@ -415,7 +415,7 @@ int main(int argc, char** argv)
                       << "  -h, --help                 Show this help message\n"
                       << "  --hololink <ip>            Hololink board IP (default " << hololink_ip << ")\n"
                       << "  --capture <0/1>        Capture and display Adcam data\n"
-                      << "  --captureMode <0-6>   Adcam Capture code (0-6), default 6\n"
+                      << "  --captureMode <0-9>   Adcam Capture code (0-9), default 6\n"
                       << "  --resetAdcam <0/1>    Reset ADCAM module\n"
                       << "  --resetPin <0-31>    Reset ADCAM pin, refer readme, default 0\n"
                       << "  --firmwareUpdate <manifest.yaml>  Update ADCAM firmware using the given manifest file\n"
