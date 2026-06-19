@@ -23,21 +23,35 @@ import time
 
 import hololink as hololink_module
 
-import ctypes #Added for FW Update as this needs structure format handling similar to C/C++
+import ctypes  # Added for FW Update as this needs structure format handling similar to C/C++
+from collections import namedtuple
 
 ################### Firmware update related changes ###################################
 # Constants from Adsd3500.cpp for Firmware update
 FLASH_PAGE_SIZE = 256
-#FLASH_PAGE_SIZE = 128
 WRITE_MASTER_FIRMWARE_COMMAND = 0x04
 WRITE_SLAVE_FIRMWARE_COMMAND = 0x2A
 GET_MASTER_FIRMWARE_COMMAND = 0x01
+GET_SLAVE_FIRMWARE_COMMAND  = 0x04
 GET_IMAGER_STATUS_CMD = 0x0020
 RESET_ADSD3500_CMD = 0x00240000
 GET_MASTER_CHIP_ID_CMD = 0x0112
+GET_SLAVE_CHIP_ID_CMD  = 0x0116
+GET_DUAL_ADSD3500_ENABLED_CMD = 0x005A
 ADI_STATUS_FIRMWARE_UPDATE = 0x000E
+ADI_STATUS_SECOND_FIRMWARE_FLASH_UPDATE = 0x0027
 ADI_ROM_CFG_CRC_SEED_VALUE = 0xFFFFFFFF
 ADI_ROM_CFG_CRC_POLYNOMIAL = 0x04C11DB7
+ADI_DUAL_FW_SLOT_SIZE = 0x20000   # 128 KB per slot
+ADI_CHUNK_HEADER_SIZE = 20        # ADI chunk header size in bytes
+FW_MIN_VERSION = (8, 1, 0, 0)     # Minimum supported firmware version
+
+# ---------------------------------------------------------------------------
+# Imager type codes returned by register 0x0032 (ADSD3500_CMD_GET_CHIP_INFO)
+# resp[0] (bits [15:8]) = Imager Type, resp[1] (bits [7:0]) = CCB Version
+# ---------------------------------------------------------------------------
+ADCAM_IMAGER_TYPE_ADSD3100 = 1
+ADCAM_IMAGER_TYPE_ADTF3066 = 2
 
 # Converted from uint32_t const crc32_table[256]. Needed for Firmware update
 crc32_table = (
@@ -192,6 +206,75 @@ def compute_crc_python(crc_parameters, data):
     return temp_value_crc32
 ################### Till here : Firmware update related changes ###################################
 
+# ---------------------------------------------------------------------------
+# Mode configuration tables — Python mirror of adcam_lib.hpp
+# ---------------------------------------------------------------------------
+#   Fields: mode_number, mipi_w, mipi_h, px_w, px_h,
+#           phase_depth_bits, ab_bits, confidence_bits,
+#           ab_averaging, depth_enable, output_mipi
+AdcamModeConfig = namedtuple('AdcamModeConfig', [
+    'mode_number', 'width', 'height', 'pixel_width', 'pixel_height',
+    'phase_depth_bits', 'ab_bits', 'confidence_bits',
+    'ab_averaging', 'depth_enable', 'output_mipi',
+])
+
+# ADSD3100: MP (1024×1024, 2 Gbps) and QMP (512×512, 1 Gbps)
+ADSD3100_STANDARD_MODES = [
+    # ---- MP modes (1024×1024, 2 Gbps MIPI) ----
+    AdcamModeConfig(0, 3072, 1707, 1024, 1024, 6, 6, 2, 0, 1, 2),
+    AdcamModeConfig(1, 3072, 1707, 1024, 1024, 6, 6, 2, 0, 1, 2),
+    # ---- QMP modes (512×512, 1 Gbps MIPI) ----
+    AdcamModeConfig(2, 2560,  512,  512,  512, 6, 6, 2, 1, 1, 2),
+    AdcamModeConfig(3, 2560,  512,  512,  512, 6, 6, 2, 1, 1, 2),
+    AdcamModeConfig(5, 2560,  512,  512,  512, 6, 6, 2, 1, 1, 2),
+    AdcamModeConfig(6, 2560,  512,  512,  512, 6, 6, 2, 1, 1, 2),
+]
+
+# ADTF3066: VGA (512×640, 1 Gbps) and QVGA (256×320, 1 Gbps)
+ADTF3066_STANDARD_MODES = [
+    # ---- VGA modes (512×640, 1 Gbps MIPI) → modes 0,1,7 ----
+    AdcamModeConfig(0, 2560,  640,  512,  640, 6, 6, 2, 1, 1, 2),
+    AdcamModeConfig(1, 2560,  640,  512,  640, 6, 6, 2, 1, 1, 2),
+    AdcamModeConfig(7, 2560,  640,  512,  640, 6, 6, 2, 1, 1, 2),
+    # ---- QVGA modes (256×320, 1 Gbps MIPI) → modes 3,6,8 ----
+    AdcamModeConfig(3, 1280,  320,  256,  320, 6, 6, 2, 1, 1, 2),
+    AdcamModeConfig(6, 1280,  320,  256,  320, 6, 6, 2, 1, 1, 2),
+    AdcamModeConfig(8, 1280,  320,  256,  320, 6, 6, 2, 1, 1, 2),
+]
+
+
+def adcam_find_mode(table, mode_number):
+    """Search a mode-config table by mode_number. Returns None if not found."""
+    for cfg in table:
+        if cfg.mode_number == mode_number:
+            return cfg
+    return None
+
+
+def adcam_make_mode_settings(cfg):
+    """Build the 16-bit Set Imager Mode word (Word 2) from an AdcamModeConfig.
+
+    Bit layout (mirrors adcam_lib.hpp adcam_make_mode_settings):
+      Bit  0      : depth_enable
+      Bit  1      : data_interleaving (always 1)
+      Bit  2      : ab_enable (always 1)
+      Bit  3      : ab_averaging
+      Bits [6:4]  : phase_depth_bits encoded as (6 - value)
+      Bits [9:7]  : ab_bits encoded as (6 - value)
+      Bits [11:10]: confidence_bits
+      Bits [13:12]: output_mipi
+    """
+    w  = (cfg.depth_enable           & 0x1) << 0
+    w |= 1                                  << 1   # data_interleaving
+    w |= 1                                  << 2   # ab_enable
+    w |= (cfg.ab_averaging           & 0x1) << 3
+    w |= ((6 - cfg.phase_depth_bits) & 0x7) << 4
+    w |= ((6 - cfg.ab_bits)          & 0x7) << 7
+    w |= (cfg.confidence_bits        & 0x3) << 10
+    w |= (cfg.output_mipi            & 0x3) << 12
+    return w & 0xFFFF
+
+
 class ADCAMEXPANDER:
     EXPANDER_0_I2C_BUS_ADDRESS = 0x68
 
@@ -270,15 +353,34 @@ class adcam:
     EXPANDER_1_I2C_BUS_ADDRESS = 0x58
 
     def __init__(
-        self, hololink_channel, hololink_i2c_controller_address, channel_metadata
+        self,
+        hololink_channel,
+        hololink_i2c_controller_address,
+        channel_metadata,
+        adcam_mode=6,
+        reset_pin=0,
     ):
         # Get handles to these controllers but don't actually talk to them yet
         self._hololink = hololink_channel.hololink()
         self._i2c = self._hololink.get_i2c(hololink_i2c_controller_address)
-        self._width = 2560
-        self._height = 512
-        self._mode = 3  # mode
+        self._adcam_mode = adcam_mode
+        self._reset_pin  = reset_pin
+        self._imager_type = 0  # set by get_imager_type_and_ccb_version() after start()
         self._pixel_format = hololink_module.sensors.csi.PixelFormat.RAW_8
+
+        # Best-effort geometry init from mode tables before imager type is known.
+        # Search ADSD3100 first then ADTF3066; call get_imager_type_and_ccb_version()
+        # after hololink.start() to pick the correct table.
+        init_cfg = adcam_find_mode(ADSD3100_STANDARD_MODES, adcam_mode)
+        if init_cfg is None:
+            init_cfg = adcam_find_mode(ADTF3066_STANDARD_MODES, adcam_mode)
+        if init_cfg is None:
+            raise RuntimeError(f"adcam: unsupported adcam_mode {adcam_mode}")
+        self._width        = init_cfg.width
+        self._height       = init_cfg.height
+        self._pixel_width  = init_cfg.pixel_width
+        self._pixel_height = init_cfg.pixel_height
+
         self._expander0 = ADCAMEXPANDER(
             hololink_channel,
             hololink_module.CAM_I2C_BUS,
@@ -329,19 +431,67 @@ class adcam:
         return self.bytes_to_uint16_array(self.registers_to_byte_array(reg))
 
     def set_mipi(self):
-        logging.debug("Setting MIPI speed")
-        # REGISTER = 0x00310003 #1.5gbps
-        REGISTER = 0x00310004  # 1gbps
-        # REGISTER = 0x00310001 #2.5gbps
-        self.set_register16_no_response(REGISTER)
+        """Configure MIPI lane speed and enable deskew.
 
+        Mirrors Adcam::set_mipi() in adcam_lib.cpp:
+          1. Read current chip status (GET_IMAGER_STATUS_CMD = 0x0020)
+          2. Set MIPI output speed to 1 Gbps (MIPI_OUTPUT_SPEED_CMD = 0x0031, value = 0x0004)
+          3. Read status again (get_status)
+          4. Enable deskew (DESKEW_ENABLE_CMD = 0x00AB, value = 0x0001)
+        """
+        logging.debug(f"Setting MIPI speed width={self._width}")
+
+        # 1. Status check before changing link settings
+        resp = self.set_register16_response(0x0020, 2)  # GET_IMAGER_STATUS_CMD
+        logging.debug(f"Chip Status before set_mipi = {resp}")
+
+        # 2. Set MIPI output speed to 1 Gbps
+        self.set_register16_no_response(0x00310004)  # MIPI_OUTPUT_SPEED_CMD = 0x0031, 1Gbps = 0x0004
+
+        # 3. Status check after speed change
+        self.get_status()
+
+        # 4. Enable deskew
         logging.debug("Enabling deskew")
-        REGISTER = 0x00AB0001
-        self.set_register16_no_response(REGISTER)
+        self.set_register16_no_response(0x00AB0001)  # DESKEW_ENABLE_CMD = 0x00AB, ENABLE_VAL = 0x0001
 
     def set_mode(self):
-        logging.debug("Setting QMP mode")
-        REGISTER = 0xDA06280F
+        """Dynamically build and send the Set Imager Mode command.
+
+        Word 1 (0xDAXX): XX = capture mode number
+        Word 2 (0xYYYY): built from AdcamModeConfig via adcam_make_mode_settings()
+        Mirrors Adcam::set_mode() in adcam_lib.cpp.
+        """
+        imager_str = {ADCAM_IMAGER_TYPE_ADSD3100: "ADSD3100",
+                      ADCAM_IMAGER_TYPE_ADTF3066: "ADTF3066"}.get(self._imager_type, "Unknown")
+
+        if self._imager_type == ADCAM_IMAGER_TYPE_ADSD3100:
+            cfg = adcam_find_mode(ADSD3100_STANDARD_MODES, self._adcam_mode)
+        elif self._imager_type == ADCAM_IMAGER_TYPE_ADTF3066:
+            cfg = adcam_find_mode(ADTF3066_STANDARD_MODES, self._adcam_mode)
+        else:
+            # Imager type not yet detected — try both tables
+            logging.warning(
+                f"set_mode: imager type not yet detected (raw={self._imager_type}), "
+                "trying ADSD3100 then ADTF3066"
+            )
+            cfg = adcam_find_mode(ADSD3100_STANDARD_MODES, self._adcam_mode)
+            if cfg is None:
+                cfg = adcam_find_mode(ADTF3066_STANDARD_MODES, self._adcam_mode)
+
+        if cfg is None:
+            raise RuntimeError(
+                f"set_mode: mode {self._adcam_mode} not found for imager "
+                f"{imager_str} (raw={self._imager_type})"
+            )
+
+        mode_reg     = 0xDA00 | (self._adcam_mode & 0xFF)
+        mode_setting = adcam_make_mode_settings(cfg)
+        REGISTER = (mode_reg << 16) | mode_setting
+        logging.info(
+            f"Setting imager mode={self._adcam_mode} "
+            f"reg=0x{mode_reg:04X} settings=0x{mode_setting:04X}"
+        )
         self.set_register16_no_response(REGISTER)
 
     def set_mode_for_slave (self):
@@ -409,12 +559,28 @@ class adcam:
         resp = self.set_register16_response(REGISTER, 2)
         logging.debug(f"0x0038 Status = {resp}")
 
-    def burst_mode_on (self):
-        #Turn on burst mode
-        REGISTER = 0x00190000
+    def burst_mode_on(self):
+        """Switch to burst mode (standard → burst)."""
+        REGISTER = 0x00190000  # SET_SWITCH_TO_BURST_MODE=0x0019, value=0x0000
         self.set_register16_no_response(REGISTER)
 
-    def get_second_pulsatrix_ID(self):
+    def switch_from_standard_to_burst(self):
+        """Switch from standard mode to burst mode. Returns True on success."""
+        REGISTER = 0x00190000
+        self.set_register16_no_response(REGISTER)
+        return True
+
+    def switch_from_burst_to_standard(self):
+        """Switch from burst mode to standard mode. Returns True on success."""
+        # 8-word command: AD00 0010 0000 0000 1000 0000 0100 0000
+        REGISTER = 0xAD000010000000001000000001000000
+        self.set_register16_no_response(REGISTER)
+        return True
+
+    def force_stop_burst_mode(self):
+        logging.debug("Forcing burst mode off")
+        self.switch_from_burst_to_standard()
+        return self.get_status()
         # Get chip ID of 2nd Pulsatrix which is on the slave side
         REGISTER = 0x0116
         print ("Getting Slave Pulsatrix Chip ID")
@@ -441,6 +607,73 @@ class adcam:
         logging.info(f"Chip Status = {resp}")
         return resp
 
+    def get_imager_type_and_ccb_version(self):
+        """Read register 0x0032 to detect imager type and CCB version.
+
+        Response layout (2 bytes):
+          resp[0] = Imager Type  (1=ADSD3100, 2=ADTF3066)
+          resp[1] = CCB Version  (1→V0, 2→V1, 3→V2, 4→V3)
+
+        Updates _imager_type, _width, _height, _pixel_width, _pixel_height.
+        Mirrors Adcam::get_imager_type_and_ccb_version() in adcam_lib.cpp.
+        """
+        REGISTER = 0x0032  # ADSD3500_CMD_GET_CHIP_INFO
+        resp = self.set_register16_response(REGISTER, 2)
+        if resp is None or len(resp) < 2:
+            logging.error("get_imager_type_and_ccb_version: incomplete response")
+            return
+
+        imager_type = resp[0] & 0xFF
+        ccb_version = resp[1] & 0xFF
+
+        ccb_str = {1: "Version 0", 2: "Version 1",
+                   3: "Version 2", 4: "Version 3"}.get(ccb_version, "Unknown")
+        imager_str = {ADCAM_IMAGER_TYPE_ADSD3100: "ADSD3100",
+                      ADCAM_IMAGER_TYPE_ADTF3066: "ADTF3066"}.get(imager_type, "Unknown")
+
+        logging.info(
+            f"Imager Type: {imager_str} (raw={imager_type}), "
+            f"CCB Version: {ccb_str} (raw={ccb_version})"
+        )
+        print(
+            f"Imager Type: {imager_str} (raw={imager_type}), "
+            f"CCB Version: {ccb_str} (raw={ccb_version})"
+        )
+
+        self._imager_type = imager_type
+
+        if imager_type == ADCAM_IMAGER_TYPE_ADSD3100:
+            table = ADSD3100_STANDARD_MODES
+        elif imager_type == ADCAM_IMAGER_TYPE_ADTF3066:
+            table = ADTF3066_STANDARD_MODES
+        else:
+            logging.error(
+                f"get_imager_type_and_ccb_version: unsupported imager type (raw={imager_type})"
+            )
+            return
+
+        mode_cfg = adcam_find_mode(table, self._adcam_mode)
+        if mode_cfg is None:
+            logging.error(
+                f"get_imager_type_and_ccb_version: mode {self._adcam_mode} "
+                f"not found for {imager_str}; keeping current geometry"
+            )
+            return
+
+        self._width        = mode_cfg.width
+        self._height       = mode_cfg.height
+        self._pixel_width  = mode_cfg.pixel_width
+        self._pixel_height = mode_cfg.pixel_height
+
+        logging.info(
+            f"Mode table selected: {imager_str} mode={self._adcam_mode} "
+            f"mipi={self._width}x{self._height} pixel={self._pixel_width}x{self._pixel_height}"
+        )
+        print(
+            f"Mode table selected: {imager_str} mode={self._adcam_mode} "
+            f"mipi={self._width}x{self._height} pixel={self._pixel_width}x{self._pixel_height}"
+        )
+
     def probe_adcam_adtf3175(self):
         # Get chip ID
         REGISTER = 0x0112
@@ -454,60 +687,42 @@ class adcam:
 
     def force_stop_burst_mode(self):
         logging.debug("Forcing burst mode off")
-
-        # turn off burst mode
-        REGISTER = 0xAD000010000000001000000001000000
-        self.set_register16_no_response(REGISTER)
-
+        self.switch_from_burst_to_standard()
         return self.get_status()
 
-    def get_fw_version(self):
-        logging.debug("Fatching version")
+    def get_fw_version(self, cmd=GET_MASTER_FIRMWARE_COMMAND):
+        """Read firmware version: switches to burst mode, reads, then returns to standard."""
+        logging.debug("Fetching FW version")
+        self.switch_from_standard_to_burst()
+        resp = self.get_fw_version_burst_mode(cmd)
+        self.switch_from_burst_to_standard()
+        return resp
 
-        # Get chip ID
-        REGISTER = 0x0112
-        resp = self.set_register16_response(REGISTER, 2)
-        logging.debug(f"Chip ID = {resp}")
+    def get_fw_version_burst_mode(self, cmd=GET_MASTER_FIRMWARE_COMMAND):
+        """Read firmware version while already in burst mode (no mode switching).
 
-        # Get Status
-        REGISTER = 0x0020
-        resp = self.set_register16_response(REGISTER, 2)
-        logging.debug(f"Chip Status = {resp}")
-
-        # set to burst mode
-        REGISTER = 0x00190000
-        self.set_register16_no_response(REGISTER)
-
-        # Read fw version
-        REGISTER = 0xAD002C05000000003100000001000000
+        cmd = GET_MASTER_FIRMWARE_COMMAND (0x01) or GET_SLAVE_FIRMWARE_COMMAND (0x04)
+        Mirrors Adcam::get_fw_version_burst_mode() in adcam_lib.cpp.
+        """
+        # 8-word command: AD00 2C05 0000 0000 3100 0000 [cmd]00 0000
+        # Byte 12 (0-indexed) encodes the command byte.
+        BASE = 0xAD002C05000000003100000000000000
+        REGISTER = BASE | (cmd << 24)
         resp = self.set_register16_response(REGISTER, 44)
-        logging.info(f"Firmware ID = {resp}")
-
-        # turn off burst mode
-        REGISTER = 0xAD000010000000001000000001000000
-        self.set_register16_no_response(REGISTER)
-
+        if resp is not None and len(resp) == 44:
+            ver = f"{resp[0]}.{resp[1]}.{resp[2]}.{resp[3]}"
+            label = "Master" if cmd == GET_MASTER_FIRMWARE_COMMAND else "Slave"
+            logging.info(f"{label} Firmware version = {ver}")
+            print(f"{label} Firmware version = {ver}")
         return resp
 
     def get_master_fw_version(self):
-        logging.info ("Fatching Master version")
-        # Read fw version
-        REGISTER = 0xAD002C05000000003100000001000000
-        resp = self.set_register16_response(REGISTER, 44)
-        logging.info(f"Master Firmware ver = {resp}")
-        print (f"Master Firmware ver = {resp}")
-        return resp
+        """Read master firmware version (alias for get_fw_version_burst_mode(master))."""
+        return self.get_fw_version_burst_mode(GET_MASTER_FIRMWARE_COMMAND)
 
     def get_slave_fw_version(self):
-        logging.info ("Fatching Slave version")
-        # Read Slave fw version
-        REGISTER = 0xAD002C05000000003100000004000000
-        #          0xAD002C05000000003100000001000000
-        print ("Sending slave FW version read command")
-        resp = self.set_register16_response(REGISTER, 44)
-        logging.info(f"Slave Firmware Ver = {resp}")
-        print (f"Slave Firmware Ver = {resp}")
-        return resp
+        """Read slave firmware version (alias for get_fw_version_burst_mode(slave))."""
+        return self.get_fw_version_burst_mode(GET_SLAVE_FIRMWARE_COMMAND)
 
     def get_chip_status(self):
         logging.debug("Fetching status")
@@ -697,12 +912,15 @@ class adcam:
         time.sleep(0.2)
         self.get_status()
 
-    def get_ChipID(self):
-        # Get chip ID
-        REGISTER = 0x0112
-        resp = self.set_register16_response(REGISTER, 2)
-        logging.info(f"Chip ID = {resp}")
-        return resp
+    def get_ChipID(self, cmd=GET_MASTER_CHIP_ID_CMD):
+        """Read chip ID. cmd = GET_MASTER_CHIP_ID_CMD (0x0112) or GET_SLAVE_CHIP_ID_CMD (0x0116)."""
+        resp = self.set_register16_response(cmd, 2)
+        label = "Master" if cmd == GET_MASTER_CHIP_ID_CMD else "Slave"
+        logging.info(f"{label} Chip ID = {resp}")
+        if resp is not None and len(resp) >= 2:
+            print(f"{label} Chip ID = 0x{resp[0]:02X}{resp[1]:02X}")
+            return True
+        return False
 
     def get_Status(self):
         # Get Status
@@ -717,6 +935,32 @@ class adcam:
         resp = self.set_register16_response(REGISTER, 2)
         logging.debug(f"Clock continuous mode = {resp}")
         return resp
+
+    # ---- Accessors (mirror Adcam::get_*() in adcam_lib.hpp) ----
+
+    def get_width(self):
+        """MIPI frame line width in bytes."""
+        return self._width
+
+    def get_height(self):
+        """MIPI frame line count."""
+        return self._height
+
+    def get_pixel_width(self):
+        """Actual image pixels per row."""
+        return self._pixel_width
+
+    def get_pixel_height(self):
+        """Actual image pixel rows."""
+        return self._pixel_height
+
+    def get_mode(self):
+        """Current capture mode index."""
+        return self._adcam_mode
+
+    def get_imager_type(self):
+        """Detected imager type: ADCAM_IMAGER_TYPE_ADSD3100=1, ADCAM_IMAGER_TYPE_ADTF3066=2."""
+        return self._imager_type
 
     #def adcam_reset_power_on(self, hololink, hololink_channel, channel_metadata):
     def adcam_reset_power_on(self):
@@ -811,23 +1055,12 @@ class adcam:
         return hololink_module.sensors.csi.BayerFormat.RGGB
 
     def start(self):
-        """Setting and checking Clock continuous mode"""
-        self.get_status()
-        # time.sleep(0.6)
-        # mode = self.get_ClockContinuousMode()
-        if 0:  # mode[0] == 1:
-            logging.debug("Continuous clock mode already enabled")
-        else:
-            logging.debug("Setting Clock continuous mode")
-            CONT_MODE = 0x00A90001
-            self.set_register16_no_response(CONT_MODE)
-            time.sleep(0.6)
-            # Reading the Clock mode for confirmation...
-            self.get_ClockContinuousMode()
-            time.sleep(0.6)
+        """Set clock continuous mode then enable streaming (mirrors Adcam::start() in C++)."""
+        logging.debug("Setting Clock continuous mode")
+        CONT_MODE = 0x00A90001  # MIPI_CLK_CONTINUOUS_CMD=0x00A9, ENABLE_VAL=0x0001
+        self.set_register16_no_response(CONT_MODE)
+        time.sleep(0.2)
 
-        """Start Streaming"""
-        # self.set_register(0x100, 0x01),
         logging.info(f"Turning ON Streaming TS in sec= {int(time.time())}")
         STREAM_MODE = 0x00AD00C5
         self.set_register16_no_response(STREAM_MODE)
@@ -844,7 +1077,359 @@ class adcam:
         time.sleep(0.2)
         self.get_status()
 
-    def sendHeader (self, FWData, FWLen, target):
+    # =========================================================================
+    # Firmware flash (dual-slot binary) — mirrors adsd3500_flash.cpp
+    # =========================================================================
+
+    def adsd3500_flash(self, file_data, force=False):
+        """Flash ADSD3500 firmware from a dual-slot binary file.
+
+        Binary layout:
+          Slot 0 (offset 0):               Master FW (chunkId=0xAD, chunkType=0x54)
+          Slot 1 (offset ADI_DUAL_FW_SLOT_SIZE): Slave FW (chunkId=0xAD, chunkType=0x60)
+
+        Each slot: [20-byte chunk header] [firmware payload] [4-byte LE CRC trailer]
+        Mirrors Adsd3500::adsd3500_flash() in adsd3500_flash.cpp.
+        """
+        if len(file_data) < 2 * ADI_DUAL_FW_SLOT_SIZE:
+            print("Firmware file too small to contain both firmware slots")
+            return False
+
+        # --- Validate Slot 0 (master) ---
+        if file_data[0] != 0xAD or file_data[1] != 0x54:
+            print(f"Invalid Slot 0 header (expected 0xAD 0x54, "
+                  f"got 0x{file_data[0]:02X} 0x{file_data[1]:02X})")
+            return False
+        master_len = (file_data[8] | (file_data[9] << 8) |
+                      (file_data[10] << 16) | (file_data[11] << 24))
+        if master_len == 0 or master_len > ADI_DUAL_FW_SLOT_SIZE - ADI_CHUNK_HEADER_SIZE:
+            print(f"Invalid master firmware size: {master_len} bytes")
+            return False
+
+        # --- Validate Slot 1 (slave) ---
+        s1 = ADI_DUAL_FW_SLOT_SIZE
+        if file_data[s1] != 0xAD or file_data[s1 + 1] != 0x60:
+            print(f"Invalid Slot 1 header (expected 0xAD 0x60, "
+                  f"got 0x{file_data[s1]:02X} 0x{file_data[s1+1]:02X})")
+            return False
+        slave_len = (file_data[s1+8] | (file_data[s1+9] << 8) |
+                     (file_data[s1+10] << 16) | (file_data[s1+11] << 24))
+        if slave_len == 0 or slave_len > ADI_DUAL_FW_SLOT_SIZE - ADI_CHUNK_HEADER_SIZE:
+            print(f"Invalid slave firmware size: {slave_len} bytes")
+            return False
+
+        # --- Extract payloads ---
+        master_fw = bytes(file_data[ADI_CHUNK_HEADER_SIZE:
+                                    ADI_CHUNK_HEADER_SIZE + master_len])
+        slave_fw  = bytes(file_data[s1 + ADI_CHUNK_HEADER_SIZE:
+                                    s1 + ADI_CHUNK_HEADER_SIZE + slave_len])
+
+        if all(b == 0 for b in master_fw):
+            print("[ERR] Slot 0 master firmware payload is all zeros. Aborting.")
+            return False
+        if all(b == 0 for b in slave_fw):
+            print("[ERR] Slot 1 slave firmware payload is all zeros. Aborting.")
+            return False
+
+        # --- Extract CRC trailers (little-endian uint32 after each payload) ---
+        off_m = ADI_CHUNK_HEADER_SIZE + master_len
+        master_expected_crc = (file_data[off_m]       | (file_data[off_m+1] << 8) |
+                                (file_data[off_m+2] << 16) | (file_data[off_m+3] << 24))
+        off_s = s1 + ADI_CHUNK_HEADER_SIZE + slave_len
+        slave_expected_crc  = (file_data[off_s]       | (file_data[off_s+1] << 8) |
+                                (file_data[off_s+2] << 16) | (file_data[off_s+3] << 24))
+        print(f"[INFO] Header Master CRC : 0x{master_expected_crc:08X}")
+        print(f"[INFO] Header Slave CRC  : 0x{slave_expected_crc:08X}")
+
+        # --- Version consistency check (first 4 bytes = version) ---
+        if master_len < 4 or slave_len < 4:
+            print("Firmware payload too small to contain a version number")
+            return False
+        master_ver = f"{master_fw[0]}.{master_fw[1]}.{master_fw[2]}.{master_fw[3]}"
+        slave_ver  = f"{slave_fw[0]}.{slave_fw[1]}.{slave_fw[2]}.{slave_fw[3]}"
+        print(f"[INFO] Master firmware version : {master_ver}")
+        print(f"[INFO] Slave  firmware version : {slave_ver}")
+        if master_fw[:4] != slave_fw[:4]:
+            print(f"[ERR] Version mismatch: master={master_ver} slave={slave_ver}. Aborting.")
+            return False
+        print(f"[INFO] Firmware version match confirmed: {master_ver}")
+
+        # --- Probe master device (mandatory) ---
+        master_resp = self.set_register16_response(GET_MASTER_CHIP_ID_CMD, 2)
+        if master_resp is None or len(master_resp) < 2:
+            print("No ADSD3500 master device detected. Aborting firmware update.")
+            return False
+        master_chip_id = (master_resp[0] << 8) | master_resp[1]
+        print(f"[INFO] Master Chip ID is: 0x{master_chip_id:04X}")
+
+        # --- Probe slave device (optional) ---
+        slave_found = False
+        slave_resp = self.set_register16_response(GET_SLAVE_CHIP_ID_CMD, 2)
+        if slave_resp is not None and len(slave_resp) >= 2:
+            slave_chip_id = (slave_resp[0] << 8) | slave_resp[1]
+            print(f"[INFO] Slave Chip ID is: 0x{slave_chip_id:04X}")
+            slave_found = True
+        else:
+            dual_resp = self.set_register16_response(GET_DUAL_ADSD3500_ENABLED_CMD, 2)
+            if dual_resp is not None and len(dual_resp) >= 2:
+                dual_enabled = (dual_resp[0] << 8) | dual_resp[1]
+                print(f"[INFO] Get Is Dual ADSD3500 Enabled (0x005A): 0x{dual_enabled:04X}")
+                if dual_enabled == 0x0001:
+                    print("[INFO] Dual ADSD3500 is enabled. Slave confirmed via master query.")
+                    slave_found = True
+                else:
+                    print("[INFO] Dual ADSD3500 disabled. Single-device configuration.")
+            else:
+                print("[INFO] Slave chip ID read failed; dual-enable query also failed.")
+                print("[INFO] Assuming single-device configuration.")
+
+        # --- Execute update(s) ---
+        if slave_found:
+            print("\nBoth ADSD3500 devices detected. Updating master and slave firmware.")
+            if not self._update_adsd3500_master_firmware(master_fw, master_len, force,
+                                                          master_expected_crc):
+                print("Master firmware update failed.")
+                return False
+            if not self._update_adsd3500_slave_firmware(slave_fw, slave_len, force,
+                                                         slave_expected_crc):
+                print("Slave firmware update failed.")
+                return False
+        else:
+            print("\nSingle ADSD3500 device detected. Updating master firmware only.")
+            if not self._update_adsd3500_master_firmware(master_fw, master_len, force,
+                                                          master_expected_crc):
+                print("Master firmware update failed.")
+                return False
+
+        return True
+
+    def _compute_fw_crc(self, fw_data):
+        """Compute CRC-32 of firmware data matching C++ compute_crc() with IS_CRC_MIRROR."""
+        crc_params = CrcParametersUnion()
+        crc_params.type = CRC_TYPE.CRC_32bit
+        crc_params.initial_crc.crc_32bit = ADI_ROM_CFG_CRC_SEED_VALUE
+        crc_params.crc_compute_flags = IS_CRC_MIRROR
+        raw_crc = compute_crc_python(crc_params, fw_data)
+        return (~raw_crc) & 0xFFFFFFFF
+
+    def _check_fw_version_constraints(self, fw_data, current_ver_bytes, label, force):
+        """Validate minimum version and check for downgrades. Returns False to abort."""
+        if len(fw_data) < 4:
+            return True  # too short to check; let it proceed
+        new_ver = tuple(fw_data[:4])
+        cur_ver = tuple(current_ver_bytes[:4])
+        new_str = ".".join(str(v) for v in new_ver)
+        cur_str = ".".join(str(v) for v in cur_ver)
+        print(f"[{label}] Update firmware version   : {new_str}")
+
+        # Minimum version check: must be >= FW_MIN_VERSION
+        if new_ver < FW_MIN_VERSION:
+            min_str = ".".join(str(v) for v in FW_MIN_VERSION)
+            print(f"[{label}] ERROR: Firmware version {new_str} is below "
+                  f"the minimum required version {min_str}. Aborting.")
+            return False
+
+        # Downgrade check
+        if new_ver < cur_ver:
+            print(f"\n[{label}] WARNING: Downgrade detected!")
+            print(f"  Current version : {cur_str}")
+            print(f"  Update version  : {new_str}")
+            if not force:
+                print("Downgrade requires explicit confirmation. Re-run with force=True.")
+                return False
+            print(f"[{label}] Proceeding with downgrade (force=True).")
+        return True
+
+    def _update_adsd3500_master_firmware(self, fw_data, fw_len, force, expected_crc):
+        """Flash master ADSD3500 firmware. Mirrors updateAdsd3500MasterFirmware()."""
+        print("\n===== _update_adsd3500_master_firmware: Starting Master Firmware Update =====")
+        self.get_ChipID(GET_MASTER_CHIP_ID_CMD)
+        time.sleep(1)
+
+        print("[MASTER] Switching to burst mode")
+        self.switch_from_standard_to_burst()
+        time.sleep(1)
+
+        print("[MASTER] Before upgrading new firmware")
+        current_ver = self.get_fw_version_burst_mode(GET_MASTER_FIRMWARE_COMMAND)
+        if current_ver is None or len(current_ver) < 44:
+            print(f"[MASTER] Failed to read current firmware version (got "
+                  f"{0 if current_ver is None else len(current_ver)} bytes, expected 44)")
+            self.switch_from_burst_to_standard()
+            return False
+        print(f"[MASTER] Current firmware version  : "
+              f"{current_ver[0]}.{current_ver[1]}.{current_ver[2]}.{current_ver[3]}")
+
+        if not self._check_fw_version_constraints(fw_data, current_ver, "MASTER", force):
+            self.switch_from_burst_to_standard()
+            return False
+
+        # Compute and verify CRC
+        computed_crc = self._compute_fw_crc(fw_data)
+        print(f"[MASTER] nResidualCRC   : 0x{computed_crc:08X}")
+        print(f"[MASTER] Expected CRC   : 0x{expected_crc:08X}")
+        if computed_crc != expected_crc:
+            print(f"[MASTER] CRC MISMATCH: computed 0x{computed_crc:08X} "
+                  f"!= expected 0x{expected_crc:08X}")
+            return False
+        print("[MASTER] CRC OK: computed CRC matches expected CRC.")
+
+        # Send firmware header
+        if not self.sendHeader(fw_data, fw_len, "master"):
+            print("[MASTER] Failed to send fw upgrade header")
+            return False
+
+        # Send firmware packets
+        packets_to_send = math.ceil(fw_len / FLASH_PAGE_SIZE)
+        print(f"\n[MASTER] Writing Firmware packets ({packets_to_send} total)...")
+        for i in range(packets_to_send):
+            chunk = bytes(fw_data[i * FLASH_PAGE_SIZE:(i + 1) * FLASH_PAGE_SIZE])
+            if len(chunk) < FLASH_PAGE_SIZE:
+                chunk = chunk.ljust(FLASH_PAGE_SIZE, b'\x00')
+            if not self.write_raw_data(chunk, FLASH_PAGE_SIZE):
+                print(f"\n[MASTER] Failed to send packet {i + 1} of {packets_to_send}!")
+                return False
+            print(f"[MASTER] Packet number: {i + 1} / {packets_to_send}", end='\r')
+        print()
+
+        print("\n[MASTER] Adsd3500 master firmware packets sent successfully!")
+        print()
+        for i in range(20, -1, -1):
+            time.sleep(1)
+            print(f"[MASTER] Waiting for {i} seconds", end='\r')
+        print()
+
+        status_resp = self.set_register16_response(GET_IMAGER_STATUS_CMD, 2)
+        status = 0
+        if status_resp is not None and len(status_resp) >= 2:
+            status = (status_resp[0] << 8) | status_resp[1]
+        print(f"[MASTER] Get status Command 0x{status:04X}")
+        if status != ADI_STATUS_FIRMWARE_UPDATE:
+            print("[MASTER] Firmware update failed")
+            return False
+
+        time.sleep(2)
+        print("[MASTER] Firmware soft resetting...")
+        self.softreset()
+
+        print()
+        for i in range(9, -1, -1):
+            time.sleep(1)
+            print(f"[MASTER] Waiting for {i} seconds", end='\r')
+        print()
+
+        self.get_ChipID(GET_MASTER_CHIP_ID_CMD)
+        time.sleep(1)
+
+        self.switch_from_standard_to_burst()
+        time.sleep(1)
+
+        print("\n[MASTER] After upgrading new firmware")
+        updated_ver = self.get_fw_version_burst_mode(GET_MASTER_FIRMWARE_COMMAND)
+        if updated_ver is not None and len(updated_ver) >= 4:
+            print(f"[MASTER] Updated firmware version   : "
+                  f"{updated_ver[0]}.{updated_ver[1]}.{updated_ver[2]}.{updated_ver[3]}")
+        time.sleep(1)
+
+        self.switch_from_burst_to_standard()
+        time.sleep(1)
+
+        self.get_ChipID(GET_MASTER_CHIP_ID_CMD)
+        return True
+
+    def _update_adsd3500_slave_firmware(self, fw_data, fw_len, force, expected_crc):
+        """Flash slave ADSD3500 firmware. Mirrors updateAdsd3500SlaveFirmware()."""
+        print("\n===== _update_adsd3500_slave_firmware: Starting Slave Firmware Update =====")
+        time.sleep(1)
+
+        print("[SLAVE] Switching to burst mode")
+        self.switch_from_standard_to_burst()
+        time.sleep(1)
+
+        print("\n[SLAVE] Before upgrading new firmware")
+        current_ver = self.get_fw_version_burst_mode(GET_SLAVE_FIRMWARE_COMMAND)
+        if current_ver is not None and len(current_ver) >= 4:
+            print(f"[SLAVE] Current firmware version   : "
+                  f"{current_ver[0]}.{current_ver[1]}.{current_ver[2]}.{current_ver[3]}")
+
+        if current_ver is not None and len(current_ver) >= 4:
+            if not self._check_fw_version_constraints(fw_data, current_ver, "SLAVE", force):
+                self.switch_from_burst_to_standard()
+                return False
+
+        # Compute and verify CRC
+        computed_crc = self._compute_fw_crc(fw_data)
+        print(f"[SLAVE] nResidualCRC   : 0x{computed_crc:08X}")
+        print(f"[SLAVE] Expected CRC   : 0x{expected_crc:08X}")
+        if computed_crc != expected_crc:
+            print(f"[SLAVE] CRC MISMATCH: computed 0x{computed_crc:08X} "
+                  f"!= expected 0x{expected_crc:08X}")
+            return False
+        print("[SLAVE] CRC OK: computed CRC matches expected CRC.")
+
+        # Send firmware header
+        if not self.sendHeader(fw_data, fw_len, "slave"):
+            print("[SLAVE] Failed to send fw upgrade header")
+            return False
+
+        # Send firmware packets
+        packets_to_send = math.ceil(fw_len / FLASH_PAGE_SIZE)
+        print(f"\n[SLAVE] Writing Firmware packets ({packets_to_send} total)...")
+        for i in range(packets_to_send):
+            chunk = bytes(fw_data[i * FLASH_PAGE_SIZE:(i + 1) * FLASH_PAGE_SIZE])
+            if len(chunk) < FLASH_PAGE_SIZE:
+                chunk = chunk.ljust(FLASH_PAGE_SIZE, b'\x00')
+            if not self.write_raw_data(chunk, FLASH_PAGE_SIZE):
+                print(f"\n[SLAVE] Failed to send packet {i + 1} of {packets_to_send}!")
+                return False
+            print(f"[SLAVE] Packet number: {i + 1} / {packets_to_send}", end='\r')
+        print()
+
+        print("\n[SLAVE] Adsd3500 slave firmware packets sent successfully!")
+        print()
+        for i in range(20, -1, -1):
+            time.sleep(1)
+            print(f"[SLAVE] Waiting for {i} seconds", end='\r')
+        print()
+
+        time.sleep(2)
+        self.switch_from_burst_to_standard()
+        time.sleep(1)
+
+        status_resp = self.set_register16_response(GET_IMAGER_STATUS_CMD, 2)
+        status = 0
+        if status_resp is not None and len(status_resp) >= 2:
+            status = (status_resp[0] << 8) | status_resp[1]
+        print(f"[SLAVE] Get status Command 0x{status:04X}")
+        if status != ADI_STATUS_SECOND_FIRMWARE_FLASH_UPDATE:
+            print("Slave Firmware write failed")
+            return False
+        print("Slave Firmware Flash write completed and is successful.")
+
+        print("[SLAVE] Firmware soft resetting...")
+        self.softreset()
+
+        print()
+        for i in range(9, -1, -1):
+            time.sleep(1)
+            print(f"[SLAVE] Waiting for {i} seconds", end='\r')
+        print()
+
+        self.switch_from_standard_to_burst()
+        time.sleep(1)
+
+        print("\n[SLAVE] After upgrading new firmware")
+        updated_ver = self.get_fw_version_burst_mode(GET_SLAVE_FIRMWARE_COMMAND)
+        if updated_ver is not None and len(updated_ver) >= 4:
+            print(f"[SLAVE] Updated firmware version    : "
+                  f"{updated_ver[0]}.{updated_ver[1]}.{updated_ver[2]}.{updated_ver[3]}")
+        time.sleep(1)
+
+        self.switch_from_burst_to_standard()
+        time.sleep(1)
+        return True
+
+    def sendHeader(self, FWData, FWLen, target):
             header = CmdHeaderUnion()
             header.fields.id8 = 0xAD
             header.fields.chunk_size16 = FLASH_PAGE_SIZE

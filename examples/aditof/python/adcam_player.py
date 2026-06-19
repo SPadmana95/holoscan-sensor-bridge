@@ -19,10 +19,15 @@
 
 import argparse
 import ctypes
+import hashlib
 import logging
 import os
+import pydoc
 import sys
 import time
+
+import requests
+import yaml
 
 import adcam
 import cuda.bindings.driver as cuda
@@ -839,14 +844,11 @@ class ADTFUnpackOp(holoscan.core.Operator):
         # shape: (H, W, 3), dtype=uint8
         return rgb
 
-    def convert_to_grayscale(self, image):
-        # Normalize the depth image to the range 0 to 255
-        # 1. First, normalize the values from 0 to 65535 to 0 to 1
+    def convert_to_grayscale(self, image, max_val=4096.0):
+        # Normalize to 0-255 using the given full-scale value
         image_normalized = cp.clip(
-            image.astype(cp.float32) * 255 / 4096, 0, 255
+            image.astype(cp.float32) * 255.0 / max_val, 0, 255
         ).astype(cp.uint8)
-        # 2. Scale it to the range 0 to 255 (for 8-bit grayscale)
-        # image_grayscale = cp.clip(image_normalized * 255, 0, 255).astype(cp.uint8)
         image_grayscale = cp.repeat(image_normalized[:, :, None], 3, axis=2)
         return image_grayscale
 
@@ -855,46 +857,52 @@ class ADTFUnpackOp(holoscan.core.Operator):
         in_message = op_input.receive("input")
         msg = in_message.get("")
         cp_frame = cp.asarray(msg)
+
+        # CsiToBayerOp outputs uint16 with pixel value in the high byte.
+        # Extract the 8-bit payload from each uint16 (mirrors shift_and_cast_kernel).
         cp_frame_u8 = (cp_frame >> 8).astype(cp.uint8)
 
-        raw = cp_frame_u8.reshape(
-            self._height, self._width, 5
-        )  # 2 bytes depth, 1 byte conf, 2 bytes ab
+        # -----------------------------------------------------------------------
+        # Unpack ADI ToF subframe-planar layout (mirrors unpack_kernel in .cu):
+        #
+        #   Subframe 1 (N×3 bytes): [D_L][D_H][C] for each of N = H×W pixels
+        #   Subframe 2 (N×2 bytes): [AB_L][AB_H] for each of N pixels
+        #
+        # Total = N×5 bytes (NOT 5 interleaved bytes per pixel).
+        # -----------------------------------------------------------------------
+        N = self._height * self._width
+        raw_flat = cp_frame_u8.reshape(-1)  # flatten to 1D (N*5 bytes)
 
-        # Extract  the data from the stream
-        depth = raw[:, :, 0].astype(cp.uint16) | (raw[:, :, 1].astype(cp.uint16) << 8)
-        conf16 = raw[:, :, 2].astype(cp.uint16) << 8
-        active_brightness = raw[:, :, 3].astype(cp.uint16) | (
-            raw[:, :, 4].astype(cp.uint16) << 8
-        )
+        # Subframe 1: depth (uint16 LE) + confidence (uint8) — 3 bytes per pixel
+        sf1 = raw_flat[:N * 3].reshape(N, 3)
+        depth = (sf1[:, 0].astype(cp.uint16) | (sf1[:, 1].astype(cp.uint16) << 8)
+                 ).reshape(self._height, self._width)
+        conf  = sf1[:, 2].astype(cp.uint16).reshape(self._height, self._width)
+
+        # Subframe 2: active brightness (uint16 LE) — 2 bytes per pixel
+        sf2 = raw_flat[N * 3:N * 5].reshape(N, 2)
+        active_brightness = (sf2[:, 0].astype(cp.uint16) | (sf2[:, 1].astype(cp.uint16) << 8)
+                             ).reshape(self._height, self._width)
 
         if self._save == 1:
-            # dump or save once frame of data, executed only once
+            # dump or save one frame of data, executed only once
             cp_frame_u8.astype("uint8").tofile("dump.bin")
             depth.astype("uint16").tofile("depth.bin")
-            conf16.astype("uint16").tofile("conf.bin")
+            conf.astype("uint16").tofile("conf.bin")
             active_brightness.astype("uint16").tofile("ab.bin")
             self._save = 0
 
-        depth_c = self.converttojetimage(depth)
-        active_brightness_c = self.convert_to_grayscale(active_brightness)
-        conf_c = self.convert_to_grayscale(conf16)
+        depth_c            = self.converttojetimage(depth)
+        active_brightness_c = self.convert_to_grayscale(active_brightness, max_val=4096.0)
+        conf_c             = self.convert_to_grayscale(conf, max_val=255.0)
 
         if self._no_of_planes == 1:
-            op_output.emit(
-                {"Depth": cp_frame_u8}, "output"
-            )  # CHECK: This is for raw data passing
+            op_output.emit({"Depth": cp_frame_u8}, "output")
         elif self._no_of_planes == 2:
-            op_output.emit(
-                {"Depth": depth_c, "ActiveBrightness": active_brightness_c}, "output"
-            )
+            op_output.emit({"Depth": depth_c, "ActiveBrightness": active_brightness_c}, "output")
         elif self._no_of_planes == 3:
             op_output.emit(
-                {
-                    "Depth": depth_c,
-                    "ActiveBrightness": active_brightness_c,
-                    "Conf": conf_c,
-                },
+                {"Depth": depth_c, "ActiveBrightness": active_brightness_c, "Conf": conf_c},
                 "output",
             )
 
@@ -940,16 +948,14 @@ class HoloscanApplication(holoscan.core.Application):
             )
             condition = self._ok
 
-        self._adcam_inst.set_mipi()
-        self._adcam_inst.set_mode()
         csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
             self,
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._adcam_inst._width
+            block_size=self._adcam_inst.get_width()
             * ctypes.sizeof(ctypes.c_uint16)
-            * self._adcam_inst._height,
+            * self._adcam_inst.get_height(),
             num_blocks=2,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
@@ -958,7 +964,19 @@ class HoloscanApplication(holoscan.core.Application):
             allocator=csi_to_bayer_pool,
             cuda_device_ordinal=self._cuda_device_ordinal,
         )
+
+        # Re-probe chip inside compose(), matching C++ compose() behavior
+        if self._adcam_inst.probe_adcam_adtf3175():
+            logging.info("ADTF3175 Found")
+        else:
+            logging.error("ADTF3175 NOT Found in compose(), exiting")
+            import sys
+            sys.exit(1)
+
+        # C++ compose() order: configure_converter → set_mipi → set_mode
         self._adcam_inst.configure_converter(csi_to_bayer_operator)
+        self._adcam_inst.set_mipi()
+        self._adcam_inst.set_mode()
 
         frame_size = csi_to_bayer_operator.get_csi_length()
         logging.info(f"{frame_size=}")
@@ -991,8 +1009,8 @@ class HoloscanApplication(holoscan.core.Application):
             self,
             name="ADIToF_data",
             no_of_planes=3,
-            width=512,
-            height=512,
+            width=self._adcam_inst.get_pixel_width(),
+            height=self._adcam_inst.get_pixel_height(),
         )
 
         left_spec = holoscan.operators.HolovizOp.InputSpec(
@@ -1096,24 +1114,62 @@ def main():
     )
 
     parser.add_argument(
+        "--captureMode",
+        type=int,
+        default=6,
+        required=False,
+        help="Capture mode index (0-9, default 6)",
+    )
+
+    parser.add_argument(
+        "--resetPin",
+        type=int,
+        default=0,
+        required=False,
+        help="GPIO reset pin number (0-31, default 0)",
+    )
+
+    parser.add_argument(
+        "--log-level",
+        default="info",
+        required=False,
+        help="Logging level: trace/debug/info/warn/error (default info)",
+    )
+
+    parser.add_argument(
+        "--firmwareUpdate",
+        default=None,
+        required=False,
+        metavar="MANIFEST.yaml",
+        help="Path to firmware manifest YAML file (e.g. adi_manifest.yaml)",
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Allow firmware downgrade (requires --firmwareUpdate)",
+    )
+
+    parser.add_argument(
         "--FWUpdate",
         "-FWU",
         type=int,
         default=0,
         required=False,
-        help="Perform firmware update (set to 1)",
+        help="Legacy: perform firmware update via separate buffers (set to 1)",
     )
 
-    # Add positional arguments for firmware file and target
+    # Add positional arguments for firmware file and target (legacy --FWUpdate path)
     parser.add_argument(
         "firmware_file",
         nargs="?",
-        help="Firmware binary or stream file",
+        help="Firmware binary or stream file (legacy --FWUpdate path)",
     )
     parser.add_argument(
         "target",
         nargs="?",
-        help="Target device: master or slave",
+        help="Target device: master or slave (legacy --FWUpdate path)",
     )
 
     # Parse arguments
@@ -1161,6 +1217,25 @@ def main():
     hololink_module.logging_level(2)
     logging.info("Initializing.")
 
+    # Apply log level
+    _log_level_map = {
+        "trace": logging.DEBUG, "debug": logging.DEBUG,
+        "info": logging.INFO, "warn": logging.WARNING,
+        "error": logging.ERROR, "critical": logging.CRITICAL,
+    }
+    logging.basicConfig(
+        level=_log_level_map.get(args.log_level.lower(), logging.INFO)
+    )
+
+    # Validate captureMode range
+    if not (0 <= args.captureMode <= 9):
+        print(f"Error: --captureMode must be 0-9, got {args.captureMode}")
+        sys.exit(1)
+    # Validate resetPin range
+    if not (0 <= args.resetPin <= 31):
+        print(f"Error: --resetPin must be 0-31, got {args.resetPin}")
+        sys.exit(1)
+
     (cu_result,) = cuda.cuInit(0)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     cu_device_ordinal = 0
@@ -1173,29 +1248,21 @@ def main():
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip="192.168.0.2")
     logging.info(f"{channel_metadata=}")
     hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Instantiate the adcam_inst itself; CAM_I2C_BUS is the appropriate bus enable setting
-    # for the I2C controller our adcam_inst is attached to
+    # Instantiate the adcam_inst; pass captureMode and resetPin from CLI args
     adcam_inst = adcam.adcam(
-        hololink_channel, hololink_module.CAM_I2C_BUS, channel_metadata
+        hololink_channel,
+        hololink_module.CAM_I2C_BUS,
+        channel_metadata,
+        adcam_mode=args.captureMode,
+        reset_pin=args.resetPin,
     )
-
-    if args.capture == 1:
-        # Set up the application
-        application = HoloscanApplication(
-            False,
-            True,
-            cu_context,
-            cu_device_ordinal,
-            hololink_channel,
-            args.ibv_name,
-            args.ibv_port,
-            adcam_inst,
-            args.frame_limit,
-        )
 
     # Establish a connection to the hololink device
     hololink = hololink_channel.hololink()
     hololink.start()
+
+    # Detect imager type and update frame geometry from the mode table
+    adcam_inst.get_imager_type_and_ccb_version()
 
     if args.resetAdcam == 1:
         logging.info("Doing the full Reset including power on sequence")
@@ -1244,7 +1311,102 @@ def main():
     adcam_inst.get_slave_fw_version()
     sys.exit(0)
     '''
-    # Firmware update section
+    # ---------------------------------------------------------------------------
+    # Firmware update via YAML manifest (mirrors C++ Programmer flow)
+    # ---------------------------------------------------------------------------
+    if args.firmwareUpdate is not None:
+        manifest_path = args.firmwareUpdate
+        if not os.path.exists(manifest_path):
+            print(f"Error: manifest file not found: {manifest_path}")
+            sys.exit(1)
+
+        print(f"Loading firmware manifest: {manifest_path}")
+        with open(manifest_path, "rt") as f:
+            manifest = yaml.safe_load(f)
+        section = manifest.get("hololink")
+        if section is None:
+            print("Error: manifest missing 'hololink' section")
+            sys.exit(1)
+
+        def _fetch_content(content_name):
+            """Download or read a content entry, verify md5+size, return bytes."""
+            meta = section["content"][content_name]
+            expected_md5 = meta["md5"]
+            expected_size = meta["size"]
+            if "url" in meta:
+                url = meta["url"]
+                print(f"Downloading {content_name} from {url} ...")
+                resp = requests.get(
+                    url,
+                    headers={"Content-Type": "binary/octet-stream"},
+                    timeout=120,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(
+                        f'Unable to fetch "{url}"; HTTP {resp.status_code}'
+                    )
+                data = resp.content
+            elif "filename" in meta:
+                with open(meta["filename"], "rb") as fh:
+                    data = fh.read()
+            else:
+                raise RuntimeError(
+                    f"No source for content '{content_name}' in manifest"
+                )
+            if len(data) != expected_size:
+                raise RuntimeError(
+                    f"{content_name}: expected {expected_size} bytes, got {len(data)}"
+                )
+            actual_md5 = hashlib.md5(data).hexdigest()
+            if actual_md5.lower() != expected_md5.lower():
+                raise RuntimeError(
+                    f"{content_name}: MD5 mismatch (expected {expected_md5}, got {actual_md5})"
+                )
+            return data
+
+        # EULA check
+        licenses = section.get("licenses")
+        if licenses and not getattr(args, "accept_eula", False):
+            print("You must accept EULA terms in order to continue.")
+            print("For each document, press <Space> to see the next page;")
+            print("At the end of the document, enter <Q> to continue.")
+            input("To continue, press <Enter>: ")
+            for lic_name in licenses:
+                lic_text = _fetch_content(lic_name).decode(errors="replace")
+                pydoc.pager(lic_text)
+                answer = input(
+                    "Press 'y' or 'Y' to accept this end user license agreement: "
+                )
+                if not answer.strip().upper().startswith("Y"):
+                    print("EULA not accepted. Aborting.")
+                    hololink.stop()
+                    sys.exit(1)
+
+        # Fetch firmware images
+        content = {}
+        for img in section.get("images", []):
+            ctx = img["context"]
+            cname = img["content"]
+            print(f"Fetching image: context={ctx} content={cname}")
+            content[ctx] = _fetch_content(cname)
+
+        fw_bin = content.get("adcam")
+        if fw_bin is None:
+            print("Error: manifest has no 'adcam' context image")
+            sys.exit(1)
+        print(f"Firmware binary: {len(fw_bin)} bytes")
+
+        result = adcam_inst.adsd3500_flash(fw_bin, force=args.force)
+        if result:
+            print("Firmware update successful!")
+        else:
+            print("Firmware update failed.")
+        hololink.stop()
+        sys.exit(0)
+
+    # ---------------------------------------------------------------------------
+    # Legacy firmware update (--FWUpdate path)
+    # ---------------------------------------------------------------------------
     if args.FWUpdate == 1:
         # Check for required positional arguments
         if not args.firmware_file or not args.target:
@@ -1302,8 +1464,12 @@ def main():
             print("Firmware update failed.")
         sys.exit(0)
 
-    version = adcam_inst.get_fw_version()
+    # Read master and slave firmware versions in a single burst session
+    adcam_inst.switch_from_standard_to_burst()
+    version = adcam_inst.get_fw_version_burst_mode(adcam.GET_MASTER_FIRMWARE_COMMAND)
     logging.info(f"{version=}")
+    adcam_inst.get_fw_version_burst_mode(adcam.GET_SLAVE_FIRMWARE_COMMAND)
+    adcam_inst.switch_from_burst_to_standard()
 
     if args.capture == 1:
         # Set up the application
@@ -1318,8 +1484,6 @@ def main():
             adcam_inst,
             args.frame_limit,
         )
-    if args.capture == 1:
-        # adcam_inst.set_mode ()
         application.run()
     elif args.capture == 2:
         logging.debug("Force stop capture..")
