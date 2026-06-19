@@ -20,6 +20,9 @@
 import argparse
 import ctypes
 import logging
+import os
+import sys
+import time
 
 import adcam
 import cuda.bindings.driver as cuda
@@ -804,7 +807,7 @@ class ADTFUnpackOp(holoscan.core.Operator):
         ]
     )
 
-    def __init__(self, *args, no_of_planes, width, height, size, **kwargs):
+    def __init__(self, *args, no_of_planes=3, width, height, **kwargs):
         super().__init__(*args, **kwargs)
         self._no_of_planes = no_of_planes
         lut_np = cp.frombuffer(self.JET_LUT_U8, dtype=cp.uint8).reshape(256, 3)
@@ -812,7 +815,6 @@ class ADTFUnpackOp(holoscan.core.Operator):
 
         self._width = width
         self._height = height
-        self._size = size
         self._save = 1
 
     def setup(self, spec):
@@ -850,45 +852,33 @@ class ADTFUnpackOp(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # Get input message
-        logging.info("ADTF compute")
-        logging.error("ADTF compute")
         in_message = op_input.receive("input")
         msg = in_message.get("")
         cp_frame = cp.asarray(msg)
         cp_frame_u8 = (cp_frame >> 8).astype(cp.uint8)
 
         raw = cp_frame_u8.reshape(
-            self._height, self._width, self._size
-        )  # 2 bytes depth, 1 byte conf, 2 bytes ab or 2 bytes depth, 0 byte conf, 2 bytes ab
+            self._height, self._width, 5
+        )  # 2 bytes depth, 1 byte conf, 2 bytes ab
 
         # Extract  the data from the stream
-        if self._no_of_planes == 3:
-            depth = raw[:, :, 0].astype(cp.uint16) | (raw[:, :, 1].astype(cp.uint16) << 8)
-            conf16 = raw[:, :, 2].astype(cp.uint16) << 8
-            active_brightness = raw[:, :, 3].astype(cp.uint16) | (
-                raw[:, :, 4].astype(cp.uint16) << 8
-            )
-        else:
-            depth = raw[:, :, 0].astype(cp.uint16) | (raw[:, :, 1].astype(cp.uint16) << 8)
-            active_brightness = raw[:, :, 2].astype(cp.uint16) | (
-                raw[:, :, 3].astype(cp.uint16) << 8
-            )
-
+        depth = raw[:, :, 0].astype(cp.uint16) | (raw[:, :, 1].astype(cp.uint16) << 8)
+        conf16 = raw[:, :, 2].astype(cp.uint16) << 8
+        active_brightness = raw[:, :, 3].astype(cp.uint16) | (
+            raw[:, :, 4].astype(cp.uint16) << 8
+        )
 
         if self._save == 1:
             # dump or save once frame of data, executed only once
             cp_frame_u8.astype("uint8").tofile("dump.bin")
             depth.astype("uint16").tofile("depth.bin")
-            if self._no_of_planes == 3:
-                conf16.astype("uint16").tofile("conf.bin")
-
+            conf16.astype("uint16").tofile("conf.bin")
             active_brightness.astype("uint16").tofile("ab.bin")
             self._save = 0
 
         depth_c = self.converttojetimage(depth)
         active_brightness_c = self.convert_to_grayscale(active_brightness)
-        if self._no_of_planes == 3:
-            conf_c = self.convert_to_grayscale(conf16)
+        conf_c = self.convert_to_grayscale(conf16)
 
         if self._no_of_planes == 1:
             op_output.emit(
@@ -921,7 +911,6 @@ class HoloscanApplication(holoscan.core.Application):
         ibv_port,
         adcam_inst,
         frame_limit,
-        mode
     ):
         logging.info("__init__")
         super().__init__()
@@ -934,10 +923,9 @@ class HoloscanApplication(holoscan.core.Application):
         self._ibv_port = ibv_port
         self._adcam_inst = adcam_inst
         self._frame_limit = frame_limit
-        self._mode = mode
 
     def compose(self):
-        logging.error("compose")
+        logging.info("compose")
         logging.info("Phani - Entering compose")
         if self._frame_limit:
             self._count = holoscan.conditions.CountCondition(
@@ -952,11 +940,10 @@ class HoloscanApplication(holoscan.core.Application):
             )
             condition = self._ok
 
-        self._adcam_inst.set_param(self._mode)
         self._adcam_inst.set_mipi()
-        self._adcam_inst.set_mode(self._mode)
+        self._adcam_inst.set_mode()
         csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,   
+            self,
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
@@ -977,7 +964,7 @@ class HoloscanApplication(holoscan.core.Application):
         logging.info(f"{frame_size=}")
         frame_context = self._cuda_context
 
-        if (self._ibv_name is not  None):
+        if self._ibv_name is not None:
             receiver_operator = hololink_module.operators.RoceReceiverOp(
                 self,
                 condition,
@@ -988,7 +975,7 @@ class HoloscanApplication(holoscan.core.Application):
                 ibv_port=self._ibv_port,
                 hololink_channel=self._hololink_channel,
                 device=self._adcam_inst,
-            )  
+            )
         else:
             receiver_operator = hololink_module.operators.LinuxReceiverOperator(
                 self,
@@ -998,106 +985,61 @@ class HoloscanApplication(holoscan.core.Application):
                 frame_context=frame_context,
                 hololink_channel=self._hololink_channel,
                 device=self._adcam_inst,
-            )  
-
-        if self._mode < 2:
-            num_planes = 2
-        else:
-            num_planes = 3
+            )
 
         ADIToF_data = ADTFUnpackOp(
             self,
             name="ADIToF_data",
-            no_of_planes=num_planes,
-            width=512, #self._adcam_inst.get_width()/self._adcam_inst.get_pixelsize(),
-            height=self._adcam_inst.get_height(),
-            size=self._adcam_inst.get_pixelsize()
+            no_of_planes=3,
+            width=512,
+            height=512,
         )
 
-        if num_planes == 2:
-            left_spec = holoscan.operators.HolovizOp.InputSpec(
-                "Depth", holoscan.operators.HolovizOp.InputType.COLOR
-            )
-            left_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-            left_spec_view.offset_x = 0
-            left_spec_view.offset_y = 0
-            left_spec_view.width = 0.50
-            left_spec_view.height = 1
-            left_spec.views = [left_spec_view]
+        left_spec = holoscan.operators.HolovizOp.InputSpec(
+            "Depth", holoscan.operators.HolovizOp.InputType.COLOR
+        )
+        left_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
+        left_spec_view.offset_x = 0
+        left_spec_view.offset_y = 0
+        left_spec_view.width = 0.33
+        left_spec_view.height = 1
+        left_spec.views = [left_spec_view]
 
-            center_spec = holoscan.operators.HolovizOp.InputSpec(
-                "ActiveBrightness", holoscan.operators.HolovizOp.InputType.COLOR
-            )
-            center_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-            center_spec_view.offset_x = 0.50
-            center_spec_view.offset_y = 0
-            center_spec_view.width = 0.51
-            center_spec_view.height = 1
-            center_spec.views = [center_spec_view]
+        center_spec = holoscan.operators.HolovizOp.InputSpec(
+            "ActiveBrightness", holoscan.operators.HolovizOp.InputType.COLOR
+        )
+        center_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
+        center_spec_view.offset_x = 0.33
+        center_spec_view.offset_y = 0
+        center_spec_view.width = 0.33
+        center_spec_view.height = 1
+        center_spec.views = [center_spec_view]
 
-            window_height = 1920
-            window_width = 2048  # for the pair
-            window_title = "ADI ToF Player"
-            visualizer = holoscan.operators.HolovizOp(
-                self,
-                name="holoviz",
-                headless=self._headless,
-                framebuffer_srgb=True,
-                # tensors=[left_spec],
-                # tensors=[left_spec, center_spec],
-                tensors=[left_spec, center_spec],
-                height=window_height,
-                width=window_width,
-                window_title=window_title,
-            )
+        right_spec = holoscan.operators.HolovizOp.InputSpec(
+            "Conf", holoscan.operators.HolovizOp.InputType.COLOR
+        )
+        right_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
+        right_spec_view.offset_x = 0.66
+        right_spec_view.offset_y = 0
+        right_spec_view.width = 0.34
+        right_spec_view.height = 1
+        right_spec.views = [right_spec_view]
 
-        else:
-        
-            left_spec = holoscan.operators.HolovizOp.InputSpec(
-                "Depth", holoscan.operators.HolovizOp.InputType.COLOR
-            )
-            left_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-            left_spec_view.offset_x = 0
-            left_spec_view.offset_y = 0
-            left_spec_view.width = 0.33
-            left_spec_view.height = 1
-            left_spec.views = [left_spec_view]
-
-            center_spec = holoscan.operators.HolovizOp.InputSpec(
-                "ActiveBrightness", holoscan.operators.HolovizOp.InputType.COLOR
-            )
-            center_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-            center_spec_view.offset_x = 0.33
-            center_spec_view.offset_y = 0
-            center_spec_view.width = 0.33
-            center_spec_view.height = 1
-            center_spec.views = [center_spec_view]
-
-            right_spec = holoscan.operators.HolovizOp.InputSpec(
-                "Conf", holoscan.operators.HolovizOp.InputType.COLOR
-            )
-            right_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-            right_spec_view.offset_x = 0.66
-            right_spec_view.offset_y = 0
-            right_spec_view.width = 0.34
-            right_spec_view.height = 1
-            right_spec.views = [right_spec_view]
-
-            window_height = 1920
-            window_width = 2048  # for the pair
-            window_title = "ADI ToF Player"
-            visualizer = holoscan.operators.HolovizOp(
-                self,
-                name="holoviz",
-                headless=self._headless,
-                framebuffer_srgb=True,
-                # tensors=[left_spec],
-                # tensors=[left_spec, center_spec],
-                tensors=[left_spec, center_spec, right_spec],
-                height=window_height,
-                width=window_width,
-                window_title=window_title,
-            )
+        window_height = 1920
+        window_width = 2048  # for the pair
+        window_title = "ADI ToF Player"
+        visualizer = holoscan.operators.HolovizOp(
+            self,
+            name="holoviz",
+            headless=self._headless,
+            framebuffer_srgb=True,
+            # tensors=[left_spec],
+            # tensors=[left_spec, center_spec],
+            tensors=[left_spec, center_spec, right_spec],
+            height=window_height,
+            width=window_width,
+            window_title=window_title,
+        )
 
         self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
         self.add_flow(csi_to_bayer_operator, ADIToF_data, {("output", "input")})
@@ -1113,7 +1055,7 @@ def int_or_none(value):
 def main():
     # Get a handle to the Hololink port we're connected to.
     parser = argparse.ArgumentParser(
-        description="ADITOF Holoscan application parseing arguments"
+        description="ADITOF Holoscan application parsing arguments"
     )
 
     # Define arguments
@@ -1129,7 +1071,7 @@ def main():
         "--capture",
         "-c",
         type=int,
-        default=-1,
+        default=0,
         required=False,
         help="Capture ADCAM streams",
     )
@@ -1151,6 +1093,27 @@ def main():
         default=0,
         required=False,
         help="Get status part of debug",
+    )
+
+    parser.add_argument(
+        "--FWUpdate",
+        "-FWU",
+        type=int,
+        default=0,
+        required=False,
+        help="Perform firmware update (set to 1)",
+    )
+
+    # Add positional arguments for firmware file and target
+    parser.add_argument(
+        "firmware_file",
+        nargs="?",
+        help="Firmware binary or stream file",
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="Target device: master or slave",
     )
 
     # Parse arguments
@@ -1216,38 +1179,7 @@ def main():
         hololink_channel, hololink_module.CAM_I2C_BUS, channel_metadata
     )
 
-    # Establish a connection to the hololink device
-    hololink = hololink_channel.hololink()
-    hololink.start()
-
-    if args.resetAdcam == 1:
-        logging.info("Doing the full Reset including power on sequence")
-        adcam_inst.adcam_reset_power_on(hololink, hololink_channel, channel_metadata)
-        hololink.stop()
-        exit()          
-
-    if args.resetOnly == 1:
-        logging.info("Peforming ONLY Reset - NOT doing FULL Power on reset")
-        adcam_inst.adcam_Only_reset(hololink, hololink_channel, channel_metadata)   
-
-    # add FW upgrade as well
-
-    # check if the chip exisits
-    if (adcam_inst.probe_adcam_adtf3175() != 1):
-        logging.error ("No ADCAM ADTF3175 found, connect ADCAM, reset and try again")
-        hololink.stop()
-        exit()
-
-    # Fetch the device version.
-    if args.getStatus == 1:
-        logging.debug("Getting only status")
-        adcam_inst.get_status()
-
-    version = adcam_inst.get_fw_version()
-    logging.info(f"{version=}")
-    logging.error(f"{version=}")
-
-    if args.capture >= 0:
+    if args.capture == 1:
         # Set up the application
         application = HoloscanApplication(
             False,
@@ -1259,11 +1191,139 @@ def main():
             args.ibv_port,
             adcam_inst,
             args.frame_limit,
-            args.capture
         )
-    if args.capture >= 0:
+
+    # Establish a connection to the hololink device
+    hololink = hololink_channel.hololink()
+    hololink.start()
+
+    if args.resetAdcam == 1:
+        logging.info("Doing the full Reset including power on sequence")
+        #adcam_inst.adcam_reset_power_on(hololink, hololink_channel, channel_metadata)
+        adcam_inst.adcam_reset_power_on()
+
+    if args.resetOnly == 1:
+        logging.info("Performing ONLY Reset - NOT doing FULL Power on reset")
+        #adcam_inst.adcam_Only_reset(hololink, hololink_channel, channel_metadata)
+        adcam_inst.adcam_Only_reset()
+
+    # add FW upgrade as well
+
+    # check if the chip exists
+    if adcam_inst.probe_adcam_adtf3175() != 1:
+        logging.error("No ADCAM ADTF3175 found, connect ADCAM, reset and try again")
+        hololink.stop()
+        exit()
+
+    # Fetch the device version.
+    if args.getStatus == 1:
+        logging.debug("Getting only status")
+        adcam_inst.get_status()
+
+    '''
+    adcam_inst.adcam_reset_power_on()
+    #FirstPulsatrixID = adcam_inst.get_ChipID()
+    #print (f"Master Pulsatrix Chip ID = {FirstPulsatrixID}")
+    #print (f"Status after Master Chip ID = {adcam_inst.get_only_status()}")
+    time.sleep(1)
+    GenericResp = adcam_inst.get_generic_resp()
+    print (f"Generic Response 1= {GenericResp}")
+
+    SecondPulsatrixID = adcam_inst.get_second_pulsatrix_ID()
+    print (f"Slave Pulsatrix Chip ID = {SecondPulsatrixID}")
+    print (f"Status after Slave Chip ID = {adcam_inst.get_only_status()}")
+    print ("Trying 2nd time")
+    SecondPulsatrixID = adcam_inst.get_second_pulsatrix_ID()
+    print (f"Slave Pulsatrix Chip ID = {SecondPulsatrixID}")
+    print (f"Status after Slave Chip ID = {adcam_inst.get_only_status()}")
+
+    GenericResp = adcam_inst.get_generic_resp()
+    print (f"Generic Response 2= {GenericResp}")
+    adcam_inst.burst_mode_on()
+    adcam_inst.get_master_fw_version()
+    adcam_inst.get_slave_fw_version()
+    sys.exit(0)
+    '''
+    # Firmware update section
+    if args.FWUpdate == 1:
+        # Check for required positional arguments
+        if not args.firmware_file or not args.target:
+            print("Usage: python adcamFWUpdate.py --FWUpdate=1 <firmware_bin/firmware_stream> <master/slave>")
+            sys.exit(1)
+
+        target = args.target.lower()
+        firmware_file = args.firmware_file
+        #Initialize buffers and lengths
+        fw_bin_len = 0
+        fw_stream_len = 0
+        bin_buffer = None
+        stream_buffer = None
+        if target == "master":
+            print("Target is Master - Proceeding with .bin update")
+            bin_file_path = firmware_file
+            if not os.path.exists(bin_file_path):
+                print(f"Error: Binary file not found at {bin_file_path}")
+                sys.exit(1)
+            try:
+                with open(bin_file_path, "rb") as fw_bin_file:
+                    bin_buffer = fw_bin_file.read()
+            except IOError as e:
+                print(f"Error opening firmware file: {e}")
+                return False
+            fw_bin_len = len(bin_buffer)
+            print("Binary FW len = ", fw_bin_len)
+        elif target == "slave":
+            print("Target is Slave - Proceeding with .stream update")
+            stream_file_path = firmware_file
+            if not os.path.exists(stream_file_path):
+                print(f"Error: Stream file not found at {stream_file_path}")
+                sys.exit(1)
+            try:
+                with open(stream_file_path, "rb") as fw_stream_file:
+                    stream_buffer = fw_stream_file.read()
+            except IOError as e:
+                print(f"Error opening firmware file: {e}")
+                return False
+            fw_stream_len = len(stream_buffer)
+            print("Stream FW len = ", fw_stream_len)
+        else:
+            print("Error: Second argument must be 'master' or 'slave' (case-insensitive). Current paramater is: ", target)
+            sys.exit(1)
+
+        if target == "master":
+            print(f"Target: Master. Writing {bin_file_path} packets...")
+        else:
+            print(f"Target: Slave. Writing {stream_file_path} packets...")
+
+        FW_Update_result = adcam_inst.perform_FW_update(target, bin_buffer, fw_bin_len, stream_buffer, fw_stream_len)
+        if FW_Update_result:
+            print("Firmware update successful!")
+        else:
+            print("Firmware update failed.")
+        sys.exit(0)
+
+    version = adcam_inst.get_fw_version()
+    logging.info(f"{version=}")
+
+    if args.capture == 1:
+        # Set up the application
+        application = HoloscanApplication(
+            False,
+            True,
+            cu_context,
+            cu_device_ordinal,
+            hololink_channel,
+            args.ibv_name,
+            args.ibv_port,
+            adcam_inst,
+            args.frame_limit,
+        )
+    if args.capture == 1:
         # adcam_inst.set_mode ()
         application.run()
+    elif args.capture == 2:
+        logging.debug("Force stop capture..")
+        adcam_inst.stream_off()
 
     hololink.stop()
 
