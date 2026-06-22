@@ -1073,7 +1073,7 @@ def int_or_none(value):
 def main():
     # Get a handle to the Hololink port we're connected to.
     parser = argparse.ArgumentParser(
-        description="ADI ToF camera player for Holoscan"
+        description="ADITOF Holoscan application parsing arguments"
     )
 
     # Define arguments
@@ -1083,7 +1083,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="Full power-on reset of the ADCAM module",
+        help="Power on Reset ADCAM module",
     )
     parser.add_argument(
         "--capture",
@@ -1091,7 +1091,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="1=start capture, 2=force stop streaming",
+        help="Capture ADCAM streams",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose mode"
@@ -1102,7 +1102,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="GPIO reset only, no power cycle",
+        help="Soft Reset ADCAM module",
     )
     parser.add_argument(
         "--getStatus",
@@ -1110,7 +1110,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="Print chip status registers",
+        help="Get status part of debug",
     )
 
     parser.add_argument(
@@ -1118,7 +1118,7 @@ def main():
         type=int,
         default=6,
         required=False,
-        help="Capture mode index (0-9)",
+        help="Capture mode index (0-9, default 6)",
     )
 
     parser.add_argument(
@@ -1126,14 +1126,14 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="GPIO reset pin number (0-31)",
+        help="GPIO reset pin number (0-31, default 0)",
     )
 
     parser.add_argument(
         "--log-level",
         default="info",
         required=False,
-        help="Logging level: debug/info/warn/error",
+        help="Logging level: trace/debug/info/warn/error (default info)",
     )
 
     parser.add_argument(
@@ -1141,14 +1141,14 @@ def main():
         default=None,
         required=False,
         metavar="MANIFEST.yaml",
-        help="Path to firmware manifest YAML file",
+        help="Path to firmware manifest YAML file (e.g. adi_manifest.yaml)",
     )
 
     parser.add_argument(
         "--force",
         action="store_true",
         default=False,
-        help="Allow firmware downgrade",
+        help="Allow firmware downgrade (requires --firmwareUpdate)",
     )
 
     # Parse arguments
@@ -1158,7 +1158,7 @@ def main():
         "--frame-limit",
         type=int_or_none,
         default=300,
-        help="Stop after this many frames",
+        help="Exit after receiving this many frames",
     )
 
     infiniband_devices = hololink_module.infiniband_devices()
@@ -1240,26 +1240,25 @@ def main():
     hololink = hololink_channel.hololink()
     hololink.start()
 
-    # Detect imager type and update frame geometry from the mode table
-    adcam_inst.get_imager_type_and_ccb_version()
-
     if args.resetAdcam == 1:
         logging.info("Doing the full Reset including power on sequence")
-        #adcam_inst.adcam_reset_power_on(hololink, hololink_channel, channel_metadata)
         adcam_inst.adcam_reset_power_on()
 
     if args.resetOnly == 1:
         logging.info("Performing ONLY Reset - NOT doing FULL Power on reset")
-        #adcam_inst.adcam_Only_reset(hololink, hololink_channel, channel_metadata)
         adcam_inst.adcam_Only_reset()
 
-    # add FW upgrade as well
-
-    # check if the chip exists
+    # check if the chip exists (0x0112) before querying imager type (0x0032)
     if adcam_inst.probe_adcam_adtf3175() != 1:
-        logging.error("No ADCAM ADTF3175 found, connect ADCAM, reset and try again")
-        hololink.stop()
-        exit()
+        logging.warning("ADCAM not responding; performing automatic power-on reset and retrying...")
+        adcam_inst.adcam_reset_power_on()
+        if adcam_inst.probe_adcam_adtf3175() != 1:
+            logging.error("No ADCAM ADTF3175 found after reset, connect ADCAM and try again")
+            hololink.stop()
+            exit()
+
+    # Detect imager type after the device is confirmed present
+    adcam_inst.get_imager_type_and_ccb_version()
 
     # Fetch the device version.
     if args.getStatus == 1:

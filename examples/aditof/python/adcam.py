@@ -690,6 +690,8 @@ class adcam:
         resp = self.set_register16_response(REGISTER, 2)
         logging.info(f"Chip ID = {resp}")
 
+        if resp is None or len(resp) < 2:
+            return 0
         if resp[0] == 0x59 and resp[1] == 0x31:
             return 1
         else:
