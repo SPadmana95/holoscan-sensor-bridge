@@ -1073,7 +1073,7 @@ def int_or_none(value):
 def main():
     # Get a handle to the Hololink port we're connected to.
     parser = argparse.ArgumentParser(
-        description="ADITOF Holoscan application parsing arguments"
+        description="ADI ToF camera player for Holoscan"
     )
 
     # Define arguments
@@ -1083,7 +1083,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="Power on Reset ADCAM module",
+        help="Full power-on reset of the ADCAM module",
     )
     parser.add_argument(
         "--capture",
@@ -1091,7 +1091,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="Capture ADCAM streams",
+        help="1=start capture, 2=force stop streaming",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose mode"
@@ -1102,7 +1102,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="Soft Reset ADCAM module",
+        help="GPIO reset only, no power cycle",
     )
     parser.add_argument(
         "--getStatus",
@@ -1110,7 +1110,7 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="Get status part of debug",
+        help="Print chip status registers",
     )
 
     parser.add_argument(
@@ -1118,7 +1118,7 @@ def main():
         type=int,
         default=6,
         required=False,
-        help="Capture mode index (0-9, default 6)",
+        help="Capture mode index (0-9)",
     )
 
     parser.add_argument(
@@ -1126,14 +1126,14 @@ def main():
         type=int,
         default=0,
         required=False,
-        help="GPIO reset pin number (0-31, default 0)",
+        help="GPIO reset pin number (0-31)",
     )
 
     parser.add_argument(
         "--log-level",
         default="info",
         required=False,
-        help="Logging level: trace/debug/info/warn/error (default info)",
+        help="Logging level: debug/info/warn/error",
     )
 
     parser.add_argument(
@@ -1141,35 +1141,14 @@ def main():
         default=None,
         required=False,
         metavar="MANIFEST.yaml",
-        help="Path to firmware manifest YAML file (e.g. adi_manifest.yaml)",
+        help="Path to firmware manifest YAML file",
     )
 
     parser.add_argument(
         "--force",
         action="store_true",
         default=False,
-        help="Allow firmware downgrade (requires --firmwareUpdate)",
-    )
-
-    parser.add_argument(
-        "--FWUpdate",
-        "-FWU",
-        type=int,
-        default=0,
-        required=False,
-        help="Legacy: perform firmware update via separate buffers (set to 1)",
-    )
-
-    # Add positional arguments for firmware file and target (legacy --FWUpdate path)
-    parser.add_argument(
-        "firmware_file",
-        nargs="?",
-        help="Firmware binary or stream file (legacy --FWUpdate path)",
-    )
-    parser.add_argument(
-        "target",
-        nargs="?",
-        help="Target device: master or slave (legacy --FWUpdate path)",
+        help="Allow firmware downgrade",
     )
 
     # Parse arguments
@@ -1179,7 +1158,7 @@ def main():
         "--frame-limit",
         type=int_or_none,
         default=300,
-        help="Exit after receiving this many frames",
+        help="Stop after this many frames",
     )
 
     infiniband_devices = hololink_module.infiniband_devices()
@@ -1287,30 +1266,6 @@ def main():
         logging.debug("Getting only status")
         adcam_inst.get_status()
 
-    '''
-    adcam_inst.adcam_reset_power_on()
-    #FirstPulsatrixID = adcam_inst.get_ChipID()
-    #print (f"Master Pulsatrix Chip ID = {FirstPulsatrixID}")
-    #print (f"Status after Master Chip ID = {adcam_inst.get_only_status()}")
-    time.sleep(1)
-    GenericResp = adcam_inst.get_generic_resp()
-    print (f"Generic Response 1= {GenericResp}")
-
-    SecondPulsatrixID = adcam_inst.get_second_pulsatrix_ID()
-    print (f"Slave Pulsatrix Chip ID = {SecondPulsatrixID}")
-    print (f"Status after Slave Chip ID = {adcam_inst.get_only_status()}")
-    print ("Trying 2nd time")
-    SecondPulsatrixID = adcam_inst.get_second_pulsatrix_ID()
-    print (f"Slave Pulsatrix Chip ID = {SecondPulsatrixID}")
-    print (f"Status after Slave Chip ID = {adcam_inst.get_only_status()}")
-
-    GenericResp = adcam_inst.get_generic_resp()
-    print (f"Generic Response 2= {GenericResp}")
-    adcam_inst.burst_mode_on()
-    adcam_inst.get_master_fw_version()
-    adcam_inst.get_slave_fw_version()
-    sys.exit(0)
-    '''
     # ---------------------------------------------------------------------------
     # Firmware update via YAML manifest (mirrors C++ Programmer flow)
     # ---------------------------------------------------------------------------
@@ -1402,66 +1357,6 @@ def main():
         else:
             print("Firmware update failed.")
         hololink.stop()
-        sys.exit(0)
-
-    # ---------------------------------------------------------------------------
-    # Legacy firmware update (--FWUpdate path)
-    # ---------------------------------------------------------------------------
-    if args.FWUpdate == 1:
-        # Check for required positional arguments
-        if not args.firmware_file or not args.target:
-            print("Usage: python adcamFWUpdate.py --FWUpdate=1 <firmware_bin/firmware_stream> <master/slave>")
-            sys.exit(1)
-
-        target = args.target.lower()
-        firmware_file = args.firmware_file
-        #Initialize buffers and lengths
-        fw_bin_len = 0
-        fw_stream_len = 0
-        bin_buffer = None
-        stream_buffer = None
-        if target == "master":
-            print("Target is Master - Proceeding with .bin update")
-            bin_file_path = firmware_file
-            if not os.path.exists(bin_file_path):
-                print(f"Error: Binary file not found at {bin_file_path}")
-                sys.exit(1)
-            try:
-                with open(bin_file_path, "rb") as fw_bin_file:
-                    bin_buffer = fw_bin_file.read()
-            except IOError as e:
-                print(f"Error opening firmware file: {e}")
-                return False
-            fw_bin_len = len(bin_buffer)
-            print("Binary FW len = ", fw_bin_len)
-        elif target == "slave":
-            print("Target is Slave - Proceeding with .stream update")
-            stream_file_path = firmware_file
-            if not os.path.exists(stream_file_path):
-                print(f"Error: Stream file not found at {stream_file_path}")
-                sys.exit(1)
-            try:
-                with open(stream_file_path, "rb") as fw_stream_file:
-                    stream_buffer = fw_stream_file.read()
-            except IOError as e:
-                print(f"Error opening firmware file: {e}")
-                return False
-            fw_stream_len = len(stream_buffer)
-            print("Stream FW len = ", fw_stream_len)
-        else:
-            print("Error: Second argument must be 'master' or 'slave' (case-insensitive). Current paramater is: ", target)
-            sys.exit(1)
-
-        if target == "master":
-            print(f"Target: Master. Writing {bin_file_path} packets...")
-        else:
-            print(f"Target: Slave. Writing {stream_file_path} packets...")
-
-        FW_Update_result = adcam_inst.perform_FW_update(target, bin_buffer, fw_bin_len, stream_buffer, fw_stream_len)
-        if FW_Update_result:
-            print("Firmware update successful!")
-        else:
-            print("Firmware update failed.")
         sys.exit(0)
 
     # Read master and slave firmware versions in a single burst session

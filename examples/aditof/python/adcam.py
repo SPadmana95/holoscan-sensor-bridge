@@ -33,10 +33,25 @@ WRITE_MASTER_FIRMWARE_COMMAND = 0x04
 WRITE_SLAVE_FIRMWARE_COMMAND = 0x2A
 GET_MASTER_FIRMWARE_COMMAND = 0x01
 GET_SLAVE_FIRMWARE_COMMAND  = 0x04
-GET_IMAGER_STATUS_CMD = 0x0020
+ADSD3500_CMD_GET_STATUS = 0x0020
 RESET_ADSD3500_CMD = 0x00240000
 GET_MASTER_CHIP_ID_CMD = 0x0112
 GET_SLAVE_CHIP_ID_CMD  = 0x0116
+SET_SWITCH_TO_BURST_MODE    = 0x0019
+STREAM_ON_CMD               = 0x00AD
+STREAM_ON_VAL               = 0x00C5
+STREAM_OFF_CMD              = 0x000C
+STREAM_OFF_VAL              = 0x0002
+ENABLE_VAL                  = 0x0001
+MIPI_CLK_CONTINUOUS_CMD     = 0x00A9
+MIPI_OUTPUT_SPEED_CMD       = 0x0031
+ADSD3500_CMD_GET_CHIP_INFO  = 0x0032
+DESKEW_ENABLE_CMD           = 0x00AB
+GET_IMAGER_ERROR_CMD        = 0x0038
+GET_MIPI_CLK_CONTINUOUS_CMD = 0x00AA
+MIPI_SPEED_1_5_GBPS         = 0x0003
+MIPI_SPEED_1GBPS            = 0x0004
+LOW_BYTE_MASK               = 0x00FF
 GET_DUAL_ADSD3500_ENABLED_CMD = 0x005A
 ADI_STATUS_FIRMWARE_UPDATE = 0x000E
 ADI_STATUS_SECOND_FIRMWARE_FLASH_UPDATE = 0x0027
@@ -397,12 +412,12 @@ class adcam:
 
     def get_version(self):
         logging.debug("Fatching Chip version")
-        REGISTER = 0x0112
+        REGISTER = GET_MASTER_CHIP_ID_CMD
         resp = self.set_register16_response(REGISTER, 2)
         logging.debug(f"Response = {resp}")
 
         # Fetch status
-        REGISTER = 0x0020
+        REGISTER = ADSD3500_CMD_GET_STATUS
         resp = self.set_register16_response(REGISTER, 2)
         logging.debug(f"Response = {resp}")
 
@@ -442,18 +457,18 @@ class adcam:
         logging.debug(f"Setting MIPI speed width={self._width}")
 
         # 1. Status check before changing link settings
-        resp = self.set_register16_response(0x0020, 2)  # GET_IMAGER_STATUS_CMD
+        resp = self.set_register16_response(ADSD3500_CMD_GET_STATUS, 2)
         logging.debug(f"Chip Status before set_mipi = {resp}")
 
         # 2. Set MIPI output speed to 1 Gbps
-        self.set_register16_no_response(0x00310004)  # MIPI_OUTPUT_SPEED_CMD = 0x0031, 1Gbps = 0x0004
+        self.set_register16_no_response((MIPI_OUTPUT_SPEED_CMD << 16) | MIPI_SPEED_1GBPS)
 
         # 3. Status check after speed change
         self.get_status()
 
         # 4. Enable deskew
         logging.debug("Enabling deskew")
-        self.set_register16_no_response(0x00AB0001)  # DESKEW_ENABLE_CMD = 0x00AB, ENABLE_VAL = 0x0001
+        self.set_register16_no_response((DESKEW_ENABLE_CMD << 16) | ENABLE_VAL)
 
     def set_mode(self):
         """Dynamically build and send the Set Imager Mode command.
@@ -525,7 +540,7 @@ class adcam:
     def read_nvm_config(self):
         logging.debug("Reading NVM Config")
         time.sleep(1)
-        REGISTER = 0x00190000
+        REGISTER = SET_SWITCH_TO_BURST_MODE << 16
         self.set_register16_no_response(REGISTER)
 
         # Read fw version
@@ -550,23 +565,18 @@ class adcam:
         logging.debug("Reading NVM Config done")
 
     def get_status(self):
-        logging.debug("Fatching status")
+        logging.debug("Fetching status")
         # Get Status
-        REGISTER = 0x0020
+        REGISTER = ADSD3500_CMD_GET_STATUS
         resp = self.set_register16_response(REGISTER, 2)
         logging.info(f"Chip Status = {resp}")
-        REGISTER = 0x0038
+        REGISTER = GET_IMAGER_ERROR_CMD
         resp = self.set_register16_response(REGISTER, 2)
         logging.debug(f"0x0038 Status = {resp}")
 
-    def burst_mode_on(self):
-        """Switch to burst mode (standard → burst)."""
-        REGISTER = 0x00190000  # SET_SWITCH_TO_BURST_MODE=0x0019, value=0x0000
-        self.set_register16_no_response(REGISTER)
-
     def switch_from_standard_to_burst(self):
         """Switch from standard mode to burst mode. Returns True on success."""
-        REGISTER = 0x00190000
+        REGISTER = SET_SWITCH_TO_BURST_MODE << 16
         self.set_register16_no_response(REGISTER)
         return True
 
@@ -582,7 +592,7 @@ class adcam:
         self.switch_from_burst_to_standard()
         return self.get_status()
         # Get chip ID of 2nd Pulsatrix which is on the slave side
-        REGISTER = 0x0116
+        REGISTER = GET_SLAVE_CHIP_ID_CMD
         print ("Getting Slave Pulsatrix Chip ID")
         resp = self.set_register16_response(REGISTER, 2)
         logging.info(f"Fun: Slave Pulsatrix Chip ID = {resp}")
@@ -599,9 +609,9 @@ class adcam:
         return resp
 
     def get_only_status(self):
-        logging.debug("Fatching status")
+        logging.debug("Fetching status")
         # Get chip ID
-        REGISTER = 0x0020
+        REGISTER = ADSD3500_CMD_GET_STATUS
         resp = self.set_register16_response(REGISTER, 2)
         print (f"Chip Status = {resp}")
         logging.info(f"Chip Status = {resp}")
@@ -617,14 +627,14 @@ class adcam:
         Updates _imager_type, _width, _height, _pixel_width, _pixel_height.
         Mirrors Adcam::get_imager_type_and_ccb_version() in adcam_lib.cpp.
         """
-        REGISTER = 0x0032  # ADSD3500_CMD_GET_CHIP_INFO
+        REGISTER = ADSD3500_CMD_GET_CHIP_INFO
         resp = self.set_register16_response(REGISTER, 2)
         if resp is None or len(resp) < 2:
             logging.error("get_imager_type_and_ccb_version: incomplete response")
             return
 
-        imager_type = resp[0] & 0xFF
-        ccb_version = resp[1] & 0xFF
+        imager_type = resp[0] & LOW_BYTE_MASK
+        ccb_version = resp[1] & LOW_BYTE_MASK
 
         ccb_str = {1: "Version 0", 2: "Version 1",
                    3: "Version 2", 4: "Version 3"}.get(ccb_version, "Unknown")
@@ -676,7 +686,7 @@ class adcam:
 
     def probe_adcam_adtf3175(self):
         # Get chip ID
-        REGISTER = 0x0112
+        REGISTER = GET_MASTER_CHIP_ID_CMD
         resp = self.set_register16_response(REGISTER, 2)
         logging.info(f"Chip ID = {resp}")
 
@@ -727,11 +737,11 @@ class adcam:
     def get_chip_status(self):
         logging.debug("Fetching status")
         # Get Status
-        REGISTER = 0x0020
+        REGISTER = ADSD3500_CMD_GET_STATUS
         resp = self.set_register16_response(REGISTER, 2)
         logging.info(f"Chip Status = {resp}")
 
-        REGISTER = 0x0038
+        REGISTER = GET_IMAGER_ERROR_CMD
         resp = self.set_register16_response(REGISTER, 2)
         logging.debug(f"Register 0x0038 Status = {resp}")
 
@@ -896,18 +906,18 @@ class adcam:
 
     def stream_on(self):
         logging.debug("Setting Clock continuous mode in stream_on")
-        CONT_MODE = 0x00A90001
+        CONT_MODE = (MIPI_CLK_CONTINUOUS_CMD << 16) | ENABLE_VAL
         self.set_register16_no_response(CONT_MODE)
         time.sleep(0.2)
         logging.debug("Turning ON Streaming")
-        STREAM_MODE = 0x00AD00C5
+        STREAM_MODE = (STREAM_ON_CMD << 16) | STREAM_ON_VAL
         self.set_register16_no_response(STREAM_MODE)
         time.sleep(0.2)
         self.get_status()
 
     def stream_off(self):
         logging.debug("Turning OFF Streaming")
-        STREAM_MODE = 0x000C0002
+        STREAM_MODE = (STREAM_OFF_CMD << 16) | STREAM_OFF_VAL
         self.set_register16_no_response(STREAM_MODE)
         time.sleep(0.2)
         self.get_status()
@@ -924,14 +934,14 @@ class adcam:
 
     def get_Status(self):
         # Get Status
-        REGISTER = 0x0020
+        REGISTER = ADSD3500_CMD_GET_STATUS
         resp = self.set_register16_response(REGISTER, 2)
         logging.info(f"Chip Status = {resp}")
         return resp
 
     def get_ClockContinuousMode(self):
         # Get Status
-        REGISTER = 0x00AA
+        REGISTER = GET_MIPI_CLK_CONTINUOUS_CMD
         resp = self.set_register16_response(REGISTER, 2)
         logging.debug(f"Clock continuous mode = {resp}")
         return resp
@@ -1057,12 +1067,12 @@ class adcam:
     def start(self):
         """Set clock continuous mode then enable streaming (mirrors Adcam::start() in C++)."""
         logging.debug("Setting Clock continuous mode")
-        CONT_MODE = 0x00A90001  # MIPI_CLK_CONTINUOUS_CMD=0x00A9, ENABLE_VAL=0x0001
+        CONT_MODE = (MIPI_CLK_CONTINUOUS_CMD << 16) | ENABLE_VAL
         self.set_register16_no_response(CONT_MODE)
         time.sleep(0.2)
 
         logging.info(f"Turning ON Streaming TS in sec= {int(time.time())}")
-        STREAM_MODE = 0x00AD00C5
+        STREAM_MODE = (STREAM_ON_CMD << 16) | STREAM_ON_VAL
         self.set_register16_no_response(STREAM_MODE)
         time.sleep(0.2)
         self.get_status()
@@ -1072,7 +1082,7 @@ class adcam:
         """Stop Streaming"""
         logging.info(f"Turning OFF Streaming TS in sec= {int(time.time())}")
         self.set_register16_response(0x0058, 2)  # read FSYNC status
-        STREAM_MODE = 0x000C0002
+        STREAM_MODE = (STREAM_OFF_CMD << 16) | STREAM_OFF_VAL
         self.set_register16_no_response(STREAM_MODE)
         time.sleep(0.2)
         self.get_status()
@@ -1174,7 +1184,7 @@ class adcam:
             if dual_resp is not None and len(dual_resp) >= 2:
                 dual_enabled = (dual_resp[0] << 8) | dual_resp[1]
                 print(f"[INFO] Get Is Dual ADSD3500 Enabled (0x005A): 0x{dual_enabled:04X}")
-                if dual_enabled == 0x0001:
+                if dual_enabled == ENABLE_VAL:
                     print("[INFO] Dual ADSD3500 is enabled. Slave confirmed via master query.")
                     slave_found = True
                 else:
@@ -1299,7 +1309,7 @@ class adcam:
             print(f"[MASTER] Waiting for {i} seconds", end='\r')
         print()
 
-        status_resp = self.set_register16_response(GET_IMAGER_STATUS_CMD, 2)
+        status_resp = self.set_register16_response(ADSD3500_CMD_GET_STATUS, 2)
         status = 0
         if status_resp is not None and len(status_resp) >= 2:
             status = (status_resp[0] << 8) | status_resp[1]
@@ -1396,7 +1406,7 @@ class adcam:
         self.switch_from_burst_to_standard()
         time.sleep(1)
 
-        status_resp = self.set_register16_response(GET_IMAGER_STATUS_CMD, 2)
+        status_resp = self.set_register16_response(ADSD3500_CMD_GET_STATUS, 2)
         status = 0
         if status_resp is not None and len(status_resp) >= 2:
             status = (status_resp[0] << 8) | status_resp[1]
@@ -1450,131 +1460,11 @@ class adcam:
             crc_params.crc_compute_flags = IS_CRC_MIRROR
             res_crc_32bit = compute_crc_python(crc_params, FWData)
             if target == "master":
-                print(f"compute_crc_python() for master: returned CRC of: {hex(res_crc_32bit)}")
+                print(f"compute_crc_python() for master: returned CRC of: 0x{res_crc_32bit:08X}")
             else:
-                print(f"compute_crc_python() for slave : returned CRC of: {hex(res_crc_32bit)}")
+                print(f"compute_crc_python() for slave : returned CRC of: 0x{res_crc_32bit:08X}")
             nResidualCRC = (~res_crc_32bit) & 0xFFFFFFFF
-            print(f"Calculated nResidualCRC: {hex(nResidualCRC)}")
+            print(f"Calculated nResidualCRC: 0x{nResidualCRC:08X}")
             header.fields.crc_of_fw32 = nResidualCRC
             write_header_status = self.write_raw_data(bytes(header), 16)
             return write_header_status
-
-    def perform_FW_update(self, target, bin_buffer, fw_bin_len, stream_buffer, fw_stream_len):
-        print("Resetting the ADCAM module before FW update")
-        self.adcam_reset_power_on()
-        self.get_ChipID()
-        if target == "master":
-            self.burst_mode_on()
-            print("Before FW update : Master FW version is")
-            version = self.get_master_fw_version()
-            logging.info(f"{version=}")
-            if version is None:
-                print("Master FW ver = : None (no response)")
-            else:
-                hex_list = [f"0x{b:02x}" for b in version]
-                print(f"Master FW ver = : {hex_list}")
-        else:
-            '''
-            print ("Check if the slave is present or not by setting and getting Redial threshold value")
-            self.set_mode_for_slave()
-            print ("Reading before setting radial threshold for Slave pulsatrix")
-            radial_threshold = self.get_slave_threshold()
-            if radial_threshold is not None and len(radial_threshold) >= 2:
-                value = (radial_threshold[0] << 8) | radial_threshold[1]
-                print(f'Slave radial threshold before setting = 0x{value:X}')
-            else:
-                print(f'Slave radial threshold before setting = {radial_threshold}')
-            time.sleep(0.5)
-            self.set_slave_threshold(0x1234)
-            time.sleep(0.5)
-            radial_threshold = self.get_slave_threshold()
-            if radial_threshold is not None and len(radial_threshold) >= 2:
-                radial_threshold_value = (radial_threshold[0] << 8) | radial_threshold[1]
-                if radial_threshold_value == 0x1234:
-                    print("Slave is present and responding correctly.")
-                else:
-                    print(f"Unexpected radial threshold value: {hex(radial_threshold_value)}")
-                    return False
-            else:
-                print("Failed to read radial threshold from slave. Slave may not be responding.")
-                return False
-            '''
-            print ("Second pulsatrix is present. So setting up burst mode")
-            self.burst_mode_on()
-            print("Before FW update : Slave FW version is")
-            version = self.get_slave_fw_version()
-            logging.info(f"{version=}")
-            if version is None:
-                print("Slave FW ver = : None (no response)")
-            else:
-                hex_list = [f"0x{b:02x}" for b in version]
-                print(f"Slave FW ver = : {hex_list}")
-
-        if target == "master":
-            write_header_status = self.sendHeader(bin_buffer, fw_bin_len, target)
-        else:
-            write_header_status = self.sendHeader(stream_buffer, fw_stream_len, target)
-        if not write_header_status:
-            print(f"Failed to write hearder. Exiting")
-            return False
-        if target == "master":
-            packets_to_send = math.ceil(fw_bin_len / FLASH_PAGE_SIZE)
-            print(f"Writing Firmware packets ({packets_to_send} total)...")
-            for i in range(packets_to_send):
-                start = i * FLASH_PAGE_SIZE
-                end = start + FLASH_PAGE_SIZE
-                time.sleep(0.1)
-                print(f"Writing Firmware packet {i+1} of {packets_to_send}...")
-                chunk = bin_buffer[start:end]
-                if len(chunk) < FLASH_PAGE_SIZE:
-                    chunk = chunk.ljust(FLASH_PAGE_SIZE, b'\x00')
-                if not self.write_raw_data(bytes(chunk), FLASH_PAGE_SIZE):
-                    print(f"\nFailed to send packet number {i+1} out of {packets_to_send}!")
-                    self.force_stop_burst_mode()
-                    return False
-        else:
-            packets_to_send = math.ceil(fw_stream_len / FLASH_PAGE_SIZE)
-            print(f"Writing Firmware packets ({packets_to_send} total)...")
-            for i in range(packets_to_send):
-                start = i * FLASH_PAGE_SIZE
-                end = start + FLASH_PAGE_SIZE
-                time.sleep(0.1)
-                print(f"Writing Firmware packet {i+1} of {packets_to_send}...")
-                chunk = stream_buffer[start:end]
-                if len(chunk) < FLASH_PAGE_SIZE:
-                    chunk = chunk.ljust(FLASH_PAGE_SIZE, b'\x00')
-                if not self.write_raw_data(bytes(chunk), FLASH_PAGE_SIZE):
-                    print(f"\nFailed to send packet number {i+1} out of {packets_to_send}!")
-                    self.force_stop_burst_mode()
-                    return False
-
-        print("Updating FW is completed. Turning off burst mode")
-        self.force_stop_burst_mode()
-        print("Waiting for 20 secs")
-        time.sleep(20)
-        fw_update_status = self.get_Status()
-        if target == "master":
-            if fw_update_status == [0x00, 0x0e] or fw_update_status == [0, 14]:
-                print("Master Firmware update Success!!!")
-            else:
-                print(f"Master Firmware update failed. Status: {fw_update_status}")
-        else:
-            if fw_update_status == [0x00, 0x27] or fw_update_status == [0, 39]:
-                print("Slave Firmware update Success!!!")
-            else:
-                print(f"Slave Firmware update failed. Status: {fw_update_status}")
-
-        print("Relset pulsatrix")
-        self.softreset()
-        print("Waiting for 10 secs")
-        time.sleep(10)
-        print("Reading Chip ID")
-        self.get_ChipID()
-        print("Reading Status")
-        self.get_status()
-        self.burst_mode_on()
-        if target == "master":
-            self.get_master_fw_version()
-        else:
-            self.get_slave_fw_version()
-        return True
