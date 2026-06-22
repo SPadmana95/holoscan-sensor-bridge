@@ -13,19 +13,19 @@
 #include <string>
 #include <vector>
 
-#define ADI_DUAL_FW_SLOT_SIZE 0x20000  // 128 KB per slot
-#define ADI_CHUNK_HEADER_SIZE 20       // ADI chunk header size in bytes
+#define ADI_DUAL_FW_SLOT_SIZE 0x20000 // 128 KB per slot
+#define ADI_CHUNK_HEADER_SIZE 20      // ADI chunk header size in bytes
 
 // Forward declaration — full definition is in adcam_lib.hpp
 namespace hololink {
 namespace sensors {
 class Adcam;
-}  // namespace sensors
-}  // namespace hololink
+} // namespace sensors
+} // namespace hololink
 
 class Adsd3500 {
   public:
-    bool adsd3500_flash(const std::vector<uint8_t>& file_data,
+    bool adsd3500_flash(const std::vector<uint8_t> &file_data,
                         std::shared_ptr<hololink::sensors::Adcam> adcam,
                         bool force = false);
 

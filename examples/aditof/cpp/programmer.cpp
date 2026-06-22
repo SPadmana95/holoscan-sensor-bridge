@@ -31,60 +31,56 @@
 
 namespace hololink {
 
-std::atomic<int> Programmer::instances { 0 };
+std::atomic<int> Programmer::instances{0};
 
 namespace {
 
-    size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::vector<uint8_t>* userp)
-    {
-        size_t total_size = size * nmemb;
-        userp->insert(userp->end(), static_cast<uint8_t*>(contents),
-            static_cast<uint8_t*>(contents) + total_size);
-        return total_size;
+size_t WriteCallback(void *contents, size_t size, size_t nmemb,
+                     std::vector<uint8_t> *userp) {
+    size_t total_size = size * nmemb;
+    userp->insert(userp->end(), static_cast<uint8_t *>(contents),
+                  static_cast<uint8_t *>(contents) + total_size);
+    return total_size;
+}
+
+std::string calculate_md5(const std::vector<uint8_t> &data) {
+    EVP_MD_CTX *context = EVP_MD_CTX_new();
+    if (!context) {
+        throw std::runtime_error("Failed to create MD5 context");
     }
 
-    std::string calculate_md5(const std::vector<uint8_t>& data)
-    {
-        EVP_MD_CTX* context = EVP_MD_CTX_new();
-        if (!context) {
-            throw std::runtime_error("Failed to create MD5 context");
-        }
-
-        if (EVP_DigestInit_ex(context, EVP_md5(), nullptr) != 1) {
-            EVP_MD_CTX_free(context);
-            throw std::runtime_error("Failed to initialize MD5 digest");
-        }
-
-        if (EVP_DigestUpdate(context, data.data(), data.size()) != 1) {
-            EVP_MD_CTX_free(context);
-            throw std::runtime_error("Failed to update MD5 digest");
-        }
-
-        unsigned char digest[EVP_MAX_MD_SIZE];
-        unsigned int digest_len;
-        if (EVP_DigestFinal_ex(context, digest, &digest_len) != 1) {
-            EVP_MD_CTX_free(context);
-            throw std::runtime_error("Failed to finalize MD5 digest");
-        }
-
+    if (EVP_DigestInit_ex(context, EVP_md5(), nullptr) != 1) {
         EVP_MD_CTX_free(context);
-
-        std::string result;
-        for (unsigned int i = 0; i < digest_len; i++) {
-            char hex[3];
-            snprintf(hex, sizeof(hex), "%02x", digest[i]);
-            result += hex;
-        }
-        return result;
+        throw std::runtime_error("Failed to initialize MD5 digest");
     }
+
+    if (EVP_DigestUpdate(context, data.data(), data.size()) != 1) {
+        EVP_MD_CTX_free(context);
+        throw std::runtime_error("Failed to update MD5 digest");
+    }
+
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len;
+    if (EVP_DigestFinal_ex(context, digest, &digest_len) != 1) {
+        EVP_MD_CTX_free(context);
+        throw std::runtime_error("Failed to finalize MD5 digest");
+    }
+
+    EVP_MD_CTX_free(context);
+
+    std::string result;
+    for (unsigned int i = 0; i < digest_len; i++) {
+        char hex[3];
+        snprintf(hex, sizeof(hex), "%02x", digest[i]);
+        result += hex;
+    }
+    return result;
+}
 
 } // anonymous namespace
 
-Programmer::Programmer(const Args& args, const std::string& manifest_filename)
-    : args_(args)
-    , manifest_filename_(manifest_filename)
-    , skip_eula_(false)
-{
+Programmer::Programmer(const Args &args, const std::string &manifest_filename)
+    : args_(args), manifest_filename_(manifest_filename), skip_eula_(false) {
     // Increment instance counter
     int current_instances = ++instances;
 
@@ -93,13 +89,13 @@ Programmer::Programmer(const Args& args, const std::string& manifest_filename)
         auto err = curl_global_init(CURL_GLOBAL_ALL);
         if (err != CURLE_OK) {
             --instances; // Decrement on failure
-            throw std::runtime_error(fmt::format("curl_global_init failed: {}", static_cast<int>(err)));
+            throw std::runtime_error(fmt::format("curl_global_init failed: {}",
+                                                 static_cast<int>(err)));
         }
     }
 }
 
-Programmer::~Programmer()
-{
+Programmer::~Programmer() {
     // Decrement instance counter
     int remaining_instances = --instances;
 
@@ -109,11 +105,11 @@ Programmer::~Programmer()
     }
 }
 
-void Programmer::fetch_manifest(const std::string& section)
-{
+void Programmer::fetch_manifest(const std::string &section) {
     YAML::Node config = YAML::LoadFile(manifest_filename_);
     if (!config[section]) {
-        throw std::runtime_error(fmt::format("Section '{}' not found in manifest", section));
+        throw std::runtime_error(
+            fmt::format("Section '{}' not found in manifest", section));
     }
 
     // Store the YAML node directly instead of converting to std::any
@@ -124,9 +120,9 @@ void Programmer::fetch_manifest(const std::string& section)
     }
 }
 
-bool Programmer::program_and_verify_images(std::shared_ptr<Hololink> hololink,
-                                           std::shared_ptr<hololink::sensors::Adcam> adcam)
-{
+bool Programmer::program_and_verify_images(
+    std::shared_ptr<Hololink> hololink,
+    std::shared_ptr<hololink::sensors::Adcam> adcam) {
     bool ok = true;
 
     if (content_.find("adcam") != content_.end() && adcam) {
@@ -140,11 +136,12 @@ bool Programmer::program_and_verify_images(std::shared_ptr<Hololink> hololink,
     return ok;
 }
 
-std::vector<uint8_t> Programmer::fetch_content(const std::string& content_name)
-{
+std::vector<uint8_t>
+Programmer::fetch_content(const std::string &content_name) {
     auto content_metadata = manifest_node_["content"][content_name];
     if (content_metadata.IsNull()) {
-        throw std::runtime_error(fmt::format("No content \"{}\" found.", content_name));
+        throw std::runtime_error(
+            fmt::format("No content \"{}\" found.", content_name));
     }
 
     std::string expected_md5 = content_metadata["md5"].as<std::string>();
@@ -156,17 +153,18 @@ std::vector<uint8_t> Programmer::fetch_content(const std::string& content_name)
         // Download from URL
         std::string url = content_metadata["url"].as<std::string>();
 
-        CURL* curl = curl_easy_init();
+        CURL *curl = curl_easy_init();
         if (!curl) {
             throw std::runtime_error("Failed to initialize CURL");
         }
 
-        struct curl_slist* headers = nullptr;
-        headers = curl_slist_append(headers, "Content-Type: binary/octet-stream");
+        struct curl_slist *headers = nullptr;
+        headers =
+            curl_slist_append(headers, "Content-Type: binary/octet-stream");
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L); // seconds
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L); // seconds
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);       // seconds
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &content);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -181,28 +179,34 @@ std::vector<uint8_t> Programmer::fetch_content(const std::string& content_name)
         curl_easy_cleanup(curl);
 
         if (res != CURLE_OK || http_code != 200) {
-            throw std::runtime_error(fmt::format("Unable to fetch \"{}\"; status={}", url, http_code));
+            throw std::runtime_error(fmt::format(
+                "Unable to fetch \"{}\"; status={}", url, http_code));
         }
     } else if (content_metadata["filename"]) {
         // Read from local file
         std::string filename = content_metadata["filename"].as<std::string>();
         std::ifstream file(filename, std::ios::binary);
         if (!file) {
-            throw std::runtime_error(fmt::format("Unable to open file: {}", filename));
+            throw std::runtime_error(
+                fmt::format("Unable to open file: {}", filename));
         }
 
         content = std::vector<uint8_t>((std::istreambuf_iterator<char>(file)),
-            std::istreambuf_iterator<char>());
+                                       std::istreambuf_iterator<char>());
     } else {
-        throw std::runtime_error(fmt::format("No instructions for where to find {} are provided.", content_name));
+        throw std::runtime_error(
+            fmt::format("No instructions for where to find {} are provided.",
+                        content_name));
     }
 
     // Verify size
     size_t actual_size = content.size();
-    HSB_LOG_DEBUG("expected_size={} actual_size={}", expected_size, actual_size);
+    HSB_LOG_DEBUG("expected_size={} actual_size={}", expected_size,
+                  actual_size);
     if (actual_size != expected_size) {
-        throw std::runtime_error(fmt::format("{} expected_size={} actual_size={}; aborted.",
-            content_name, expected_size, actual_size));
+        throw std::runtime_error(
+            fmt::format("{} expected_size={} actual_size={}; aborted.",
+                        content_name, expected_size, actual_size));
     }
 
     // Verify MD5
@@ -210,19 +214,19 @@ std::vector<uint8_t> Programmer::fetch_content(const std::string& content_name)
     HSB_LOG_DEBUG("expected_md5={} actual_md5={}", expected_md5, actual_md5);
     auto to_lower = [](std::string s) {
         std::transform(s.begin(), s.end(), s.begin(),
-            [](unsigned char c) { return std::tolower(c); });
+                       [](unsigned char c) { return std::tolower(c); });
         return s;
     };
     if (to_lower(actual_md5) != to_lower(expected_md5)) {
-        throw std::runtime_error(fmt::format("{} expected_md5={} actual_md5={}; aborted.",
-            content_name, expected_md5, actual_md5));
+        throw std::runtime_error(
+            fmt::format("{} expected_md5={} actual_md5={}; aborted.",
+                        content_name, expected_md5, actual_md5));
     }
 
     return content;
 }
 
-void Programmer::check_eula()
-{
+void Programmer::check_eula() {
     if (skip_eula_) {
         HSB_LOG_TRACE("Accepting EULA is not necessary.");
         return;
@@ -240,42 +244,47 @@ void Programmer::check_eula()
         throw std::runtime_error("Invalid licenses found in manifest");
     }
 
-    std::cout << "You must accept EULA terms in order to continue." << std::endl;
-    std::cout << "For each document, press <Space> to see the next page;" << std::endl;
-    std::cout << "At the end of the document, enter <Q> to continue." << std::endl;
+    std::cout << "You must accept EULA terms in order to continue."
+              << std::endl;
+    std::cout << "For each document, press <Space> to see the next page;"
+              << std::endl;
+    std::cout << "At the end of the document, enter <Q> to continue."
+              << std::endl;
     std::cout << "To continue, press <Enter>: ";
     std::cin.get();
 
-    for (const auto& license : licenses) {
+    for (const auto &license : licenses) {
         std::string license_name = license.as<std::string>();
         std::vector<uint8_t> license_content = fetch_content(license_name);
 
         // Convert binary content to string for display
-        std::string license_text(license_content.begin(), license_content.end());
+        std::string license_text(license_content.begin(),
+                                 license_content.end());
 
         // Display license text using pager (simplified - just print to console)
         std::cout << "\n=== LICENSE: " << license_name << " ===" << std::endl;
         std::cout << license_text << std::endl;
         std::cout << "=== END LICENSE ===" << std::endl;
 
-        std::cout << "Press 'y' or 'Y' to accept this end user license agreement: ";
+        std::cout
+            << "Press 'y' or 'Y' to accept this end user license agreement: ";
         std::string answer;
         std::getline(std::cin, answer);
         if (answer.empty() || (answer[0] != 'y' && answer[0] != 'Y')) {
-            throw std::runtime_error("Execution of this script requires an agreement with license terms.");
+            throw std::runtime_error("Execution of this script requires an "
+                                     "agreement with license terms.");
         }
     }
 }
 
-void Programmer::check_images()
-{
+void Programmer::check_images() {
     auto images = manifest_node_["images"];
     if (!images) {
         throw std::runtime_error("No images section found in manifest");
     }
 
     content_.clear();
-    for (const auto& image_metadata : images) {
+    for (const auto &image_metadata : images) {
         std::string context = image_metadata["context"].as<std::string>();
         std::string content_name = image_metadata["content"].as<std::string>();
         HSB_LOG_INFO("context={} content_name={}", context, content_name);

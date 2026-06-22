@@ -28,16 +28,15 @@
 #include <hololink/core/logging.hpp>
 #include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
-#include <hololink/operators/roce_receiver/roce_receiver_op.hpp>
 #include <hololink/operators/linux_receiver/linux_receiver_op.hpp>
+#include <hololink/operators/roce_receiver/roce_receiver_op.hpp>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
 #include "adcam_lib.hpp"
 #include "adcam_unpack_op.hpp"
 #include "programmer.hpp"
-
+#include <holoscan/holoscan.hpp>
+#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
+#include <holoscan/operators/holoviz/holoviz.hpp>
 
 namespace {
 
@@ -52,29 +51,23 @@ namespace {
 //==============================================================================
 
 class HoloscanApplication : public holoscan::Application {
-public:
+  public:
     //--------------------------------------------------------------------------
     // Constructor
     //--------------------------------------------------------------------------
-    explicit HoloscanApplication(bool headless,
-                                 bool fullscreen,
-                                 CUcontext cuda_context,
-                                 int cuda_device_ordinal,
-                                 std::shared_ptr<hololink::DataChannel> hololink_channel,
-                                 const std::string& ibv_name,
-                                 uint32_t ibv_port,
-                                 std::shared_ptr<hololink::sensors::Adcam> adcam_inst_,
-                                 int64_t frame_limit)
-        : headless_(headless)
-        , fullscreen_(fullscreen)
-        , cuda_context_(cuda_context)
-        , cuda_device_ordinal_(cuda_device_ordinal)
-        , hololink_channel_(hololink_channel)
-        , ibv_name_(ibv_name)
-        , ibv_port_(ibv_port)
-        , adcam_inst(adcam_inst_)
-        , frame_limit_(frame_limit)
-    {}
+    explicit HoloscanApplication(
+        bool headless, bool fullscreen, CUcontext cuda_context,
+        int cuda_device_ordinal,
+        std::shared_ptr<hololink::DataChannel> hololink_channel,
+        const std::string &ibv_name, uint32_t ibv_port,
+        std::shared_ptr<hololink::sensors::Adcam> adcam_inst_,
+        int64_t frame_limit)
+        : headless_(headless), fullscreen_(fullscreen),
+          cuda_context_(cuda_context),
+          cuda_device_ordinal_(cuda_device_ordinal),
+          hololink_channel_(hololink_channel), ibv_name_(ibv_name),
+          ibv_port_(ibv_port), adcam_inst(adcam_inst_),
+          frame_limit_(frame_limit) {}
 
     HoloscanApplication() = delete;
 
@@ -88,7 +81,8 @@ public:
         //======================================================================
         std::shared_ptr<holoscan::Condition> condition;
         if (frame_limit_) {
-            condition = make_condition<holoscan::CountCondition>("count", frame_limit_);
+            condition =
+                make_condition<holoscan::CountCondition>("count", frame_limit_);
         } else {
             condition = make_condition<holoscan::BooleanCondition>("ok", true);
         }
@@ -97,18 +91,17 @@ public:
         //======================================================================
         auto csi_to_bayer_pool = make_resource<holoscan::BlockMemoryPool>(
             "csi_to_bayer_pool",
-            /*storage_type=*/1,   // device memory
-            adcam_inst->get_width() * adcam_inst->get_height() * sizeof(uint16_t),
-            /*num_blocks=*/2
-        );
+            /*storage_type=*/1, // device memory
+            adcam_inst->get_width() * adcam_inst->get_height() *
+                sizeof(uint16_t),
+            /*num_blocks=*/2);
 
         //======================================================================
         // 3. CSI → Bayer operator
         //======================================================================
         auto csi_to_bayer_operator =
             make_operator<hololink::operators::CsiToBayerOp>(
-                "csi_to_bayer",
-                holoscan::Arg("allocator", csi_to_bayer_pool),
+                "csi_to_bayer", holoscan::Arg("allocator", csi_to_bayer_pool),
                 holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
 
         // Converter interface
@@ -136,11 +129,12 @@ public:
         const size_t frame_size = csi_to_bayer_operator->get_csi_length();
         HOLOSCAN_LOG_INFO("Acquire frame of size {}", frame_size);
         // [DBG] Full sizing breakdown for MP/QMP analysis.
-        HOLOSCAN_LOG_INFO("[DBG compose] mode={} mipi={}x{} pixel={}x{}"
-                          " mipi_frame_bytes={} pixel_frame_bytes={} csi_frame_bytes={}",
-            adcam_inst->get_mode(),
-            adcam_inst->get_width(), adcam_inst->get_height(),
-            adcam_inst->get_pixel_width(), adcam_inst->get_pixel_height(),
+        HOLOSCAN_LOG_INFO(
+            "[DBG compose] mode={} mipi={}x{} pixel={}x{}"
+            " mipi_frame_bytes={} pixel_frame_bytes={} csi_frame_bytes={}",
+            adcam_inst->get_mode(), adcam_inst->get_width(),
+            adcam_inst->get_height(), adcam_inst->get_pixel_width(),
+            adcam_inst->get_pixel_height(),
             adcam_inst->get_width() * adcam_inst->get_height(),
             adcam_inst->get_pixel_width() * adcam_inst->get_pixel_height() * 5,
             frame_size);
@@ -156,20 +150,18 @@ public:
 
             receiver_operator =
                 make_operator<hololink::operators::RoceReceiverOp>(
-                    "receiver",
-                    condition,
+                    "receiver", condition,
                     holoscan::Arg("frame_size", frame_size),
                     holoscan::Arg("frame_context", cuda_context_),
                     holoscan::Arg("ibv_name", ibv_name_),
                     holoscan::Arg("ibv_port", ibv_port_),
                     holoscan::Arg("hololink_channel", hololink_channel_.get()),
                     holoscan::Arg("device_start", std::function<void()>([this] {
-                        adcam_inst->start();
-                    })),
+                                      adcam_inst->start();
+                                  })),
                     holoscan::Arg("device_stop", std::function<void()>([this] {
-                        adcam_inst->stop();
-                    }))
-                );
+                                      adcam_inst->stop();
+                                  })));
 
         } else {
             // ---------------- Linux path ----------------
@@ -177,47 +169,43 @@ public:
 
             receiver_operator =
                 make_operator<hololink::operators::LinuxReceiverOp>(
-                    "receiver",
-                    condition,
+                    "receiver", condition,
                     holoscan::Arg("frame_size", frame_size),
                     holoscan::Arg("frame_context", cuda_context_),
                     holoscan::Arg("hololink_channel", hololink_channel_.get()),
                     holoscan::Arg("device_start", std::function<void()>([this] {
-                        adcam_inst->start();
-                    })),
+                                      adcam_inst->start();
+                                  })),
                     holoscan::Arg("device_stop", std::function<void()>([this] {
-                        adcam_inst->stop();
-                    }))
-                );
+                                      adcam_inst->stop();
+                                  })));
         }
 
         //======================================================================
         // 6. Memory pool for ADI ToF unpack operator
         //======================================================================
-        const size_t pool_block_size =
-            adcam_inst->get_width() * adcam_inst->get_height() * sizeof(uint16_t);
-        HOLOSCAN_LOG_INFO("[DBG compose] BlockMemoryPool block_size={} num_blocks=8"
-                          " total_pool_bytes={}",
-                          pool_block_size, pool_block_size * 8);
-        auto device_allocator_adtf =
-            make_resource<holoscan::BlockMemoryPool>(
-                "ADTF_output_pool",
-                /*storage_type=*/1,
-                pool_block_size,
-                /*num_blocks=*/8);
+        const size_t pool_block_size = adcam_inst->get_width() *
+                                       adcam_inst->get_height() *
+                                       sizeof(uint16_t);
+        HOLOSCAN_LOG_INFO(
+            "[DBG compose] BlockMemoryPool block_size={} num_blocks=8"
+            " total_pool_bytes={}",
+            pool_block_size, pool_block_size * 8);
+        auto device_allocator_adtf = make_resource<holoscan::BlockMemoryPool>(
+            "ADTF_output_pool",
+            /*storage_type=*/1, pool_block_size,
+            /*num_blocks=*/8);
 
         //======================================================================
         // 7. ADI ToF unpack operator (5‑byte/pixel → Depth/AB/Conf)
         //======================================================================
-        auto ADIToF_data =
-            make_operator<hololink::operators::ADTFUnpackOp>(
-                "ADIToF_data",
-                holoscan::Arg("num_planes", 3),
-                holoscan::Arg("width",  (int)adcam_inst->get_pixel_width()),
-                holoscan::Arg("height", (int)adcam_inst->get_pixel_height()),
-                holoscan::Arg("allocator", device_allocator_adtf),
-                holoscan::Arg("in_tensor_name", ""),
-                holoscan::Arg("out_tensor_name", "output"));
+        auto ADIToF_data = make_operator<hololink::operators::ADTFUnpackOp>(
+            "ADIToF_data", holoscan::Arg("num_planes", 3),
+            holoscan::Arg("width", (int)adcam_inst->get_pixel_width()),
+            holoscan::Arg("height", (int)adcam_inst->get_pixel_height()),
+            holoscan::Arg("allocator", device_allocator_adtf),
+            holoscan::Arg("in_tensor_name", ""),
+            holoscan::Arg("out_tensor_name", "output"));
 
         //======================================================================
         // 8. Holoviz visualization setup
@@ -226,39 +214,38 @@ public:
         // ----- Left: Depth -----
         holoscan::ops::HolovizOp::InputSpec left_spec{
             "Depth", holoscan::ops::HolovizOp::InputType::COLOR};
-        left_spec.views_ = { {0.0f, 0.0f, 0.33f, 1.0f} };
+        left_spec.views_ = {{0.0f, 0.0f, 0.33f, 1.0f}};
 
         // ----- Center: ActiveBrightness -----
         holoscan::ops::HolovizOp::InputSpec center_spec{
             "ActiveBrightness", holoscan::ops::HolovizOp::InputType::COLOR};
-        center_spec.views_ = { {0.33f, 0.0f, 0.33f, 1.0f} };
+        center_spec.views_ = {{0.33f, 0.0f, 0.33f, 1.0f}};
 
         // ----- Right: Confidence -----
         holoscan::ops::HolovizOp::InputSpec right_spec{
             "Conf", holoscan::ops::HolovizOp::InputType::COLOR};
-        right_spec.views_ = { {0.66f, 0.0f, 0.34f, 1.0f} };
+        right_spec.views_ = {{0.66f, 0.0f, 0.34f, 1.0f}};
 
         const std::string window_title = "ADI ToF Player";
 
-        auto visualizer =
-            make_operator<holoscan::ops::HolovizOp>(
-                "holoviz",
-                holoscan::Arg("headless", headless_),
-                holoscan::Arg("framebuffer_srgb", true),
-                holoscan::Arg("tensors",
-                    std::vector<holoscan::ops::HolovizOp::InputSpec>{
-                        left_spec, center_spec, right_spec}),
-                holoscan::Arg("window_title", window_title));
+        auto visualizer = make_operator<holoscan::ops::HolovizOp>(
+            "holoviz", holoscan::Arg("headless", headless_),
+            holoscan::Arg("framebuffer_srgb", true),
+            holoscan::Arg("tensors",
+                          std::vector<holoscan::ops::HolovizOp::InputSpec>{
+                              left_spec, center_spec, right_spec}),
+            holoscan::Arg("window_title", window_title));
 
         //======================================================================
         // 9. Connect operators (data flow graph)
         //======================================================================
-        add_flow(receiver_operator, csi_to_bayer_operator, {{"output", "input"}});
+        add_flow(receiver_operator, csi_to_bayer_operator,
+                 {{"output", "input"}});
         add_flow(csi_to_bayer_operator, ADIToF_data, {{"output", "input"}});
         add_flow(ADIToF_data, visualizer, {{"output", "receivers"}});
     }
 
-private:
+  private:
     //--------------------------------------------------------------------------
     // Member variables
     //--------------------------------------------------------------------------
@@ -275,8 +262,7 @@ private:
 
 } // anonymous namespace
 
-int main(int argc, char** argv)
-{
+int main(int argc, char **argv) {
     //--------------------------------------------------------------------------
     // 1. Default configuration values
     //--------------------------------------------------------------------------
@@ -298,7 +284,7 @@ int main(int argc, char** argv)
     int32_t pattern = 0;
     bool pattern_set = false;
 
-    std::string ibv_name;  // autodetected below
+    std::string ibv_name; // autodetected below
 
     //--------------------------------------------------------------------------
     // 2. Attempt to auto-detect an InfiniBand device name
@@ -306,7 +292,7 @@ int main(int argc, char** argv)
     try {
         auto devices = hololink::infiniband_devices();
         ibv_name = devices.size() > 0 ? devices[0] : "";
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cerr << "Error getting IBV name: " << e.what() << std::endl;
         return EXIT_FAILURE;
     }
@@ -315,52 +301,51 @@ int main(int argc, char** argv)
     // 3. Command-line argument parsing
     //--------------------------------------------------------------------------
     const struct option long_options[] = {
-        { "help", no_argument, nullptr, 'h' },
-        { "captureMode", required_argument, nullptr, 0 },
-        { "headless", no_argument, nullptr, 0 },
-        { "fullscreen", no_argument, nullptr, 0 },
-        { "frame-limit", required_argument, nullptr, 0 },
-        { "configuration", required_argument, nullptr, 0 },
-        { "hololink", required_argument, nullptr, 0 },
-        { "ibv-name", required_argument, nullptr, 0 },
-        { "ibv-port", required_argument, nullptr, 0 },
-        { "resetAdcam", required_argument, nullptr, 0 },
-        { "resetPin", required_argument, nullptr, 0 },
-        { "firmwareUpdate", required_argument, nullptr, 0 },
-        { "capture", required_argument, nullptr, 0 },
-        { "log-level", required_argument, nullptr, 0 },
-        { 0, 0, nullptr, 0 }
-    };
+        {"help", no_argument, nullptr, 'h'},
+        {"captureMode", required_argument, nullptr, 0},
+        {"headless", no_argument, nullptr, 0},
+        {"fullscreen", no_argument, nullptr, 0},
+        {"frame-limit", required_argument, nullptr, 0},
+        {"configuration", required_argument, nullptr, 0},
+        {"hololink", required_argument, nullptr, 0},
+        {"ibv-name", required_argument, nullptr, 0},
+        {"ibv-port", required_argument, nullptr, 0},
+        {"resetAdcam", required_argument, nullptr, 0},
+        {"resetPin", required_argument, nullptr, 0},
+        {"firmwareUpdate", required_argument, nullptr, 0},
+        {"capture", required_argument, nullptr, 0},
+        {"log-level", required_argument, nullptr, 0},
+        {0, 0, nullptr, 0}};
 
     while (true) {
         int option_index = 0;
         int c = getopt_long(argc, argv, "h", long_options, &option_index);
 
         if (c == -1)
-            break;  // no more options
+            break; // no more options
 
         const std::string argument(optarg ? optarg : "");
 
         if (c == 0) {
             // Long option
-            const struct option* opt = &long_options[option_index];
+            const struct option *opt = &long_options[option_index];
 
             if (opt->name == std::string("captureMode")) {
                 adcam_mode = std::stoi(argument);
 
-                if (adcam_mode <0 || adcam_mode > 9)
-                {
-                    throw std::runtime_error(fmt::format("Unhandled captureMode \"{}\"", adcam_mode));
+                if (adcam_mode < 0 || adcam_mode > 9) {
+                    throw std::runtime_error(fmt::format(
+                        "Unhandled captureMode \"{}\"", adcam_mode));
                 }
 
             } else if (opt->name == std::string("resetPin")) {
                 reset_pin = std::stoi(argument);
 
-                if (reset_pin <0 || reset_pin > 31)
-                {
-                    throw std::runtime_error(fmt::format("Unhandled resetPin (0-31) \"{}\"", reset_pin));
+                if (reset_pin < 0 || reset_pin > 31) {
+                    throw std::runtime_error(fmt::format(
+                        "Unhandled resetPin (0-31) \"{}\"", reset_pin));
                 }
-            }else if (opt->name == std::string("headless")) {
+            } else if (opt->name == std::string("headless")) {
                 headless = true;
 
             } else if (opt->name == std::string("fullscreen")) {
@@ -395,31 +380,45 @@ int main(int argc, char** argv)
                 std::string lvl = argument;
                 std::transform(lvl.begin(), lvl.end(), lvl.begin(), ::tolower);
 
-                if (lvl == "trace") log_level = holoscan::LogLevel::TRACE;
-                else if (lvl == "debug") log_level = holoscan::LogLevel::DEBUG;
-                else if (lvl == "info") log_level = holoscan::LogLevel::INFO;
-                else if (lvl == "warn") log_level = holoscan::LogLevel::WARN;
-                else if (lvl == "error") log_level = holoscan::LogLevel::ERROR;
-                else if (lvl == "critical") log_level = holoscan::LogLevel::CRITICAL;
-                else if (lvl == "off") log_level = holoscan::LogLevel::OFF;
-                else throw std::runtime_error(fmt::format("Unhandled log level \"{}\"", argument));
+                if (lvl == "trace")
+                    log_level = holoscan::LogLevel::TRACE;
+                else if (lvl == "debug")
+                    log_level = holoscan::LogLevel::DEBUG;
+                else if (lvl == "info")
+                    log_level = holoscan::LogLevel::INFO;
+                else if (lvl == "warn")
+                    log_level = holoscan::LogLevel::WARN;
+                else if (lvl == "error")
+                    log_level = holoscan::LogLevel::ERROR;
+                else if (lvl == "critical")
+                    log_level = holoscan::LogLevel::CRITICAL;
+                else if (lvl == "off")
+                    log_level = holoscan::LogLevel::OFF;
+                else
+                    throw std::runtime_error(
+                        fmt::format("Unhandled log level \"{}\"", argument));
 
             } else {
-                throw std::runtime_error(fmt::format("Unhandled option \"{}\"", opt->name));
+                throw std::runtime_error(
+                    fmt::format("Unhandled option \"{}\"", opt->name));
             }
 
         } else if (c == 'h') {
             // Help text
-            std::cout << "Usage: " << argv[0] << " [options]\n"
-                      << "Options:\n"
-                      << "  -h, --help                 Show this help message\n"
-                      << "  --hololink <ip>            Hololink board IP (default " << hololink_ip << ")\n"
-                      << "  --capture <0/1>        Capture and display Adcam data\n"
-                      << "  --captureMode <0-9>   Adcam Capture code (0-9), default 6\n"
-                      << "  --resetAdcam <0/1>    Reset ADCAM module\n"
-                      << "  --resetPin <0-31>    Reset ADCAM pin, refer readme, default 0\n"
-                      << "  --firmwareUpdate <manifest.yaml>  Update ADCAM firmware using the given manifest file\n"
-                      ;
+            std::cout
+                << "Usage: " << argv[0] << " [options]\n"
+                << "Options:\n"
+                << "  -h, --help                 Show this help message\n"
+                << "  --hololink <ip>            Hololink board IP (default "
+                << hololink_ip << ")\n"
+                << "  --capture <0/1>        Capture and display Adcam data\n"
+                << "  --captureMode <0-9>   Adcam Capture code (0-9), default "
+                   "6\n"
+                << "  --resetAdcam <0/1>    Reset ADCAM module\n"
+                << "  --resetPin <0-31>    Reset ADCAM pin, refer readme, "
+                   "default 0\n"
+                << "  --firmwareUpdate <manifest.yaml>  Update ADCAM firmware "
+                   "using the given manifest file\n";
             return EXIT_SUCCESS;
 
         } else {
@@ -441,14 +440,24 @@ int main(int argc, char** argv)
             using HSB = hololink::logging::HsbLogLevel;
             HSB hsb_level = hololink::logging::HSB_LOG_LEVEL_INFO;
             switch (log_level) {
-            case HL::TRACE:    hsb_level = HSB::HSB_LOG_LEVEL_TRACE;  break;
-            case HL::DEBUG:    hsb_level = HSB::HSB_LOG_LEVEL_DEBUG;  break;
-            case HL::INFO:     hsb_level = HSB::HSB_LOG_LEVEL_INFO;   break;
-            case HL::WARN:     hsb_level = HSB::HSB_LOG_LEVEL_WARN;   break;
+            case HL::TRACE:
+                hsb_level = HSB::HSB_LOG_LEVEL_TRACE;
+                break;
+            case HL::DEBUG:
+                hsb_level = HSB::HSB_LOG_LEVEL_DEBUG;
+                break;
+            case HL::INFO:
+                hsb_level = HSB::HSB_LOG_LEVEL_INFO;
+                break;
+            case HL::WARN:
+                hsb_level = HSB::HSB_LOG_LEVEL_WARN;
+                break;
             case HL::ERROR:
             case HL::CRITICAL:
             case HL::OFF:
-            default:           hsb_level = HSB::HSB_LOG_LEVEL_ERROR;  break;
+            default:
+                hsb_level = HSB::HSB_LOG_LEVEL_ERROR;
+                break;
             }
             hololink::logging::hsb_log_level = hsb_level;
         }
@@ -473,15 +482,16 @@ int main(int argc, char** argv)
             hololink::Enumerator::find_channel(hololink_ip);
 
         //hololink::DataChannel hololink_channel(channel_metadata);
-        auto hololink_channel = std::make_shared<hololink::DataChannel>(channel_metadata);
+        auto hololink_channel =
+            std::make_shared<hololink::DataChannel>(channel_metadata);
 
         uint32_t bus = hololink::CAM_I2C_BUS;
 
         //--------------------------------------------------------------------------
         // 4.3 Create ADCAM instance
         //--------------------------------------------------------------------------
-        auto adcam_inst =
-            std::make_shared<hololink::sensors::Adcam>(hololink_channel, bus, channel_metadata, adcam_mode, reset_pin);
+        auto adcam_inst = std::make_shared<hololink::sensors::Adcam>(
+            hololink_channel, bus, channel_metadata, adcam_mode, reset_pin);
 
         //--------------------------------------------------------------------------
         // 4.4 Start Hololink and initialize camera
@@ -489,29 +499,32 @@ int main(int argc, char** argv)
         auto hololink = hololink_channel->hololink();
         hololink->start();
 
-        if (do_reset > 0)
-        {
+        if (do_reset > 0) {
             adcam_inst->adcam_reset_power_on();
             //adcam_inst->adcam_hard_reset();
 
             // Print master and slave firmware versions in a single burst session
             adcam_inst->switch_from_standard_to_burst();
-            auto print_fw_version = [](const std::string& label, const std::vector<uint8_t>& resp) {
+            auto print_fw_version = [](const std::string &label,
+                                       const std::vector<uint8_t> &resp) {
                 if (resp.size() >= 4) {
-                    std::cout << label << " Firmware version = "
-                              << (int)resp[0] << "." << (int)resp[1] << "."
-                              << (int)resp[2] << "." << (int)resp[3] << std::endl;
+                    std::cout << label << " Firmware version = " << (int)resp[0]
+                              << "." << (int)resp[1] << "." << (int)resp[2]
+                              << "." << (int)resp[3] << std::endl;
                 } else {
-                    std::cerr << label << " Firmware version: incomplete response" << std::endl;
+                    std::cerr << label
+                              << " Firmware version: incomplete response"
+                              << std::endl;
                 }
             };
-            print_fw_version("Master", adcam_inst->get_fw_version_burst_mode(GET_MASTER_FIRMWARE_COMMAND));
-            print_fw_version("Slave",  adcam_inst->get_fw_version_burst_mode(GET_SLAVE_FIRMWARE_COMMAND));
+            print_fw_version("Master", adcam_inst->get_fw_version_burst_mode(
+                                           GET_MASTER_FIRMWARE_COMMAND));
+            print_fw_version("Slave", adcam_inst->get_fw_version_burst_mode(
+                                          GET_SLAVE_FIRMWARE_COMMAND));
             adcam_inst->switch_from_burst_to_standard();
         }
 
-        if (!firmware_manifest.empty())
-        {
+        if (!firmware_manifest.empty()) {
             hololink::Programmer::Args args;
             args.manifest = firmware_manifest;
             args.hololink_ip = hololink_ip;
@@ -525,17 +538,22 @@ int main(int argc, char** argv)
 
             std::cout << "EULA accepted.." << std::endl;
             programmer.check_images();
-            auto ok = programmer.program_and_verify_images(hololink, adcam_inst);
+            auto ok =
+                programmer.program_and_verify_images(hololink, adcam_inst);
             hololink->stop();
             CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
             return EXIT_SUCCESS;
         }
-                
+
         if (!adcam_inst->probe_adcam_adtf3175()) {
-            std::cout << "ADTF3175 not responding; performing automatic power-on reset and retrying..." << std::endl;
+            std::cout << "ADTF3175 not responding; performing automatic "
+                         "power-on reset and retrying..."
+                      << std::endl;
             adcam_inst->adcam_reset_power_on();
             if (!adcam_inst->probe_adcam_adtf3175()) {
-                std::cerr << "No ADTF3175 found after reset, connect ADCAM and try again" << std::endl;
+                std::cerr << "No ADTF3175 found after reset, connect ADCAM and "
+                             "try again"
+                          << std::endl;
                 hololink->stop();
                 return EXIT_FAILURE;
             }
@@ -548,16 +566,13 @@ int main(int argc, char** argv)
         //--------------------------------------------------------------------------
         // 4.5 Create and run Holoscan application
         //--------------------------------------------------------------------------
-        if (do_capture > 0)
-        {        
-        auto application = holoscan::make_application<HoloscanApplication>(
-            headless, fullscreen,
-            cu_context, cu_device_ordinal,
-            hololink_channel, ibv_name, ibv_port,
-            adcam_inst, frame_limit);
+        if (do_capture > 0) {
+            auto application = holoscan::make_application<HoloscanApplication>(
+                headless, fullscreen, cu_context, cu_device_ordinal,
+                hololink_channel, ibv_name, ibv_port, adcam_inst, frame_limit);
 
-        // NO need to do reset, if needed, add this line
-        //hololink->reset();
+            // NO need to do reset, if needed, add this line
+            //hololink->reset();
             std::cout << "Calling run" << std::endl;
             application->run();
         }
@@ -568,7 +583,7 @@ int main(int argc, char** argv)
         // Release CUDA primary context
         CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
 
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cout << "Exception: " << e.what() << std::endl;
         return EXIT_FAILURE;
     }
