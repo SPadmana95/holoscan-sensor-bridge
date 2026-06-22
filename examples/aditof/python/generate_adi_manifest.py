@@ -49,6 +49,7 @@ def fetch_url(url):
     response = requests.get(
         url,
         headers={"Content-Type": "binary/octet-stream"},
+        timeout=120,
     )
     if response.status_code != requests.codes.ok:
         raise Exception(

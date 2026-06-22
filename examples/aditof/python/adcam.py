@@ -1027,8 +1027,8 @@ class adcam:
         time.sleep(0.2)  # Pauses execution for 0.2 seconds (200 milliseconds)
         self._pf_gpio.pull_reset_high(0)
 
-        logging.info("booting up ADSD, wait for 10 seconds")
-        time.sleep(10)  # Boot-up ADSD3500
+        logging.info("booting up ADSD, wait for 5 seconds")
+        time.sleep(5)  # Boot-up ADSD3500
 
     #def adcam_Only_reset(self, hololink, hololink_channel, channel_metadata):
     def adcam_Only_reset(self):
@@ -1040,8 +1040,8 @@ class adcam:
         logging.debug("ADCAM - Making Reset HIGH ONLY")
         self._pf_gpio.pull_reset_high(0)
 
-        logging.info("Waiting 10 secs after reset")
-        time.sleep(10)  # Boot-up ADSD3500
+        logging.info("Waiting 5 secs after reset")
+        time.sleep(5)  # Boot-up ADSD3500
 
     def configure_converter(self, converter):
         # where do we find the first received byte?
