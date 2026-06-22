@@ -87,30 +87,102 @@ ls examples/aditof/
 
 ## Usage
 
+### C++ player
+
 ```bash
-./adcam_player [options]
+./build/examples/aditof/cpp/adcam_player [options]
 ```
 
-### Minimal examples
+### Python player
 
 ```bash
-# Reset the camera, then capture and display frames
-./adcam_player --resetAdcam 1 --capture 1
+python3 examples/aditof/python/adcam_player.py [options]
+```
 
-# Capture only (camera already initialized)
-./adcam_player --capture 1
+### Examples
 
-# Capture using MP mode 0 (1024×1024, 16-bit depth+AB, 8-bit conf, ab_averaging off)
-./adcam_player --captureMode 0 --capture 1
+#### Reset and capture (first run / cold start)
 
-# Capture using QMP mode 3 (512×512, 16-bit depth+AB, 8-bit conf, ab_averaging on)
-./adcam_player --captureMode 3 --capture 1
+```bash
+# C++    — full power-on reset, then capture
+./build/examples/aditof/cpp/adcam_player --resetAdcam 1 --capture 1
 
-# Headless capture with a 100-frame limit
-./adcam_player --capture 1 --headless --frame-limit 100
+# Python — full power-on reset, then capture
+python3 examples/aditof/python/adcam_player.py --resetAdcam 1 --capture 1
+```
 
-# Update firmware, then exit
-./adcam_player --firmwareUpdate adi_manifest.yaml
+#### Capture only (device already running)
+
+```bash
+# C++
+./build/examples/aditof/cpp/adcam_player --capture 1
+
+# Python
+python3 examples/aditof/python/adcam_player.py --capture 1
+```
+
+#### ADSD3100 — QMP modes (512×512, 1 Gbps MIPI)
+
+```bash
+# C++    — mode 3: QMP, 512×512, ab_averaging on
+./build/examples/aditof/cpp/adcam_player --captureMode 3 --capture 1
+
+# Python — mode 3
+python3 examples/aditof/python/adcam_player.py --captureMode 3 --capture 1
+
+# C++    — mode 6 (default): QMP, 512×512, ab_averaging on
+./build/examples/aditof/cpp/adcam_player --captureMode 6 --capture 1
+
+# Python — mode 6 (default)
+python3 examples/aditof/python/adcam_player.py --captureMode 6 --capture 1
+```
+
+#### ADTF3066 — VGA modes (512×640, 1 Gbps MIPI)
+
+```bash
+# C++    — mode 0: VGA, 512×640
+./build/examples/aditof/cpp/adcam_player --captureMode 0 --capture 1
+
+# Python — mode 0
+python3 examples/aditof/python/adcam_player.py --captureMode 0 --capture 1
+
+# C++    — mode 7: VGA, 512×640
+./build/examples/aditof/cpp/adcam_player --captureMode 7 --capture 1
+
+# Python — mode 7
+python3 examples/aditof/python/adcam_player.py --captureMode 7 --capture 1
+```
+
+#### ADTF3066 — QVGA modes (256×320, 1 Gbps MIPI)
+
+```bash
+# C++    — mode 3: QVGA, 256×320
+./build/examples/aditof/cpp/adcam_player --captureMode 3 --capture 1
+
+# Python — mode 3
+python3 examples/aditof/python/adcam_player.py --captureMode 3 --capture 1
+
+# C++    — mode 6 (default): QVGA, 256×320
+./build/examples/aditof/cpp/adcam_player --captureMode 6 --capture 1
+
+# Python — mode 6 (default)
+python3 examples/aditof/python/adcam_player.py --captureMode 6 --capture 1
+
+# C++    — mode 8: QVGA, 256×320
+./build/examples/aditof/cpp/adcam_player --captureMode 8 --capture 1
+
+# Python — mode 8
+python3 examples/aditof/python/adcam_player.py --captureMode 8 --capture 1
+```
+
+#### Firmware update
+
+```bash
+# C++
+./build/examples/aditof/cpp/adcam_player --firmwareUpdate adi_manifest.yaml
+
+# Python
+python3 examples/aditof/python/adcam_player.py --firmwareUpdate adi_manifest.yaml
 ```
 
 ---
@@ -119,18 +191,19 @@ ls examples/aditof/
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--hololink <ip>` | string | `192.168.0.2` | IP address of the HSB |
-| `--resetAdcam <0\|1>` | int | `0` | Perform full power-on reset sequence |
+| `--resetAdcam <0\|1>` / `-r` | int | `0` | Full power-on reset sequence (power rails + GPIO) |
+| `--resetOnly <0\|1>` / `-RO` | int | `0` | GPIO-only soft reset (no power cycle) |
 | `--resetPin <0-31>` | int | `0` | GPIO pin number used for camera reset |
-| `--captureMode <n>` | int | `6` | Capture mode — selects frame geometry (see table below); valid modes depend on the detected imager type |
-| `--capture <0\|1>` | int | `0` | Start capture and display pipeline |
+| `--captureMode <n>` | int | `6` | Capture mode (0–9); valid modes depend on detected imager type |
+| `--capture <0\|1>` / `-c` | int | `0` | `1` = start capture pipeline, `2` = force stop streaming |
+| `--getStatus <0\|1>` / `-gs` | int | `0` | Read and log chip status registers |
 | `--firmwareUpdate <file>` | string | — | Path to firmware manifest YAML |
-| `--headless` | flag | off | Run Holoviz without a display window |
-| `--fullscreen` | flag | off | Run Holoviz in fullscreen mode |
-| `--frame-limit <n>` | int | `0` (unlimited) | Stop after N frames |
+| `--force` | flag | off | Allow firmware downgrade (requires `--firmwareUpdate`) |
+| `--frame-limit <n>` | int | `300` | Stop after N frames (`None` = unlimited) |
 | `--ibv-name <dev>` | string | auto-detected | InfiniBand device name |
-| `--ibv-port <n>` | uint | `1` | InfiniBand port number |
-| `--log-level <level>` | string | `info` | Log verbosity: `trace` `debug` `info` `warn` `error` `critical` `off` |
+| `--ibv-port <n>` | int | `1` | InfiniBand port number |
+| `--log-level <level>` | string | `info` | Log verbosity: `trace` `debug` `info` `warn` `error` |
+| `--verbose` / `-v` | flag | off | Enable verbose mode |
 | `-h`, `--help` | flag | — | Print usage |
 
 **Capture mode → frame geometry and imager settings**
@@ -140,30 +213,30 @@ after the sensor is detected. Two tables are defined in `adcam_lib.hpp`:
 
 #### `adsd3100_standardModes` — ADSD3100
 
-| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type |
-|------|-------------------|-------------|------------|------|
-| 0 | 3072 | 1707 | 1024 × 1024 | MP |
-| 1 | 3072 | 1707 | 1024 × 1024 | MP |
-| 2 | 2560 | 512 | 512 × 512 | QMP |
-| 3 | 2560 | 512 | 512 × 512 | QMP |
-| 5 | 2560 | 512 | 512 × 512 | QMP |
-| **6** (default) | **2560** | **512** | **512 × 512** | QMP |
+| Mode Number| MIPI width (bytes) | MIPI height | Pixel dims | Type | Dump Type | Range |
+|------|-------------------|-------------|------------|------|-----------|-------|
+| 0 | 3072 | 1707 | 1024 × 1024 | MP | Native | Short |
+| 1 | 3072 | 1707 | 1024 × 1024 | MP | Native | Long |
+| 2 | 2560 | 512 | 512 × 512 | QMP | 2x2 analog | Short |
+| 3 | 2560 | 512 | 512 × 512 | QMP | 2x2 analog | Long |
+| 5 | 2560 | 512 | 512 × 512 | QMP | mixed bin | Very Long |
+| **6** (default) | **2560** | **512** | **512 × 512** | QMP | mixed bin | short |
 
-All modes: `phase_depth_bits`=6 (16-bit), `ab_bits`=6 (16-bit), `depth_enable`=1, `output_mipi`=2.
+All modes: `phase_depth_bits`=6 (16-bit), `ab_bits`=6 (16-bit), `confidence_bits`=2 (8-bit), `depth_enable`=1, `output_mipi`=2.
 MP modes require 1.5 Gbps MIPI; QMP modes require 1 Gbps MIPI.
 
 #### `adtf3066_standardModes` — ADTF3066
 
-| Mode | MIPI width (bytes) | MIPI height | Pixel dims | Type |
-|------|-------------------|-------------|------------|------|
-| 0 | 2560 | 640 | 512 × 640 | VGA |
-| 1 | 2560 | 640 | 512 × 640 | VGA |
-| 7 | 2560 | 640 | 512 × 640 | VGA |
-| 3 | 1280 | 320 | 256 × 320 | QVGA |
-| **6** (default) | **1280** | **320** | **256 × 320** | QVGA |
-| 8 | 1280 | 320 | 256 × 320 | QVGA |
+| Mode Number| MIPI width (bytes) | MIPI height | Pixel dims | Type | Dump Type | Range |
+|------|-------------------|-------------|------------|------|-----------|-------|
+| 0 | 2560 | 640 | 512 × 640 | VGA | native | Short |
+| 1 | 2560 | 640 | 512 × 640 | VGA | native | Long |
+| 7 | 2560 | 640 | 512 × 640 | VGA | native | Long |
+| 3 | 1280 | 320 | 256 × 320 | QVGA | 2x2 analog | Long |
+| **6** (default) | **1280** | **320** | **256 × 320** | QVGA | mixed bin | short |
+| 8 | 1280 | 320 | 256 × 320 | QVGA | mixed bin | Very Long |
 
-All ADTF3066 modes: `phase_depth_bits`=6, `ab_bits`=6, `confidence_bits`=2, `ab_averaging`=1, `depth_enable`=1, `output_mipi`=2, 1 Gbps MIPI.
+All ADTF3066 modes: `phase_depth_bits`=6 (16-bit), `ab_bits`=6 (16-bit), `confidence_bits`=2 (8-bit), `ab_averaging`=1, `depth_enable`=1, `output_mipi`=2, 1 Gbps MIPI.
 
 **Imager settings field encoding:**
 
@@ -228,7 +301,7 @@ adcam_reset_power_on()
  ├─ configure_reset_low()             Assert GPIO reset pin LOW
  ├─ expander0_.set_register() ×N      Power rail sequencing via I2C expanders
  ├─ configure_reset_high()            Release GPIO reset pin HIGH
- └─ sleep(10s)                        Wait for ADTF3175 boot
+ └─ sleep(5s)                         Wait for ADTF3175 boot
 ```
 
 ### 3. Firmware Update (if `--firmwareUpdate <manifest>`)
@@ -250,15 +323,14 @@ After a successful update the process exits; `--capture` is not required.
 ### 4. Sensor Probe and Imager Detection
 
 ```
-get_ChipID(GET_MASTER_CHIP_ID_CMD)          Read register 0x0112; log Chip ID bytes
 probe_adcam_adtf3175()                      Read 0x0112; check ID == {0x59, 0x31}
- └─ returns 1 → prints "ADTF3175 Found"
-    returns 0 → prints "ADTF3175 NOT Found" and exits
-get_status()                                Read 0x0020 and 0x0038; log chip status
+ ├─ returns 1 → ADTF3175 confirmed present
+ └─ returns 0 → auto adcam_reset_power_on() + retry
+                 └─ still 0 → log error and exit
 get_imager_type_and_ccb_version()           Read register 0x0032 (ADSD3500_CMD_GET_CHIP_INFO)
  └─ resp[0] (bits [15:8]) = Imager Type     1=ADSD3100, 2=ADTF3066
  └─ resp[1] (bits  [7:0]) = CCB Version     1=Ver0, 2=Ver1, 3=Ver2, 4=Ver3
- └─ Re-initializes width_/height_/pixel_width_/pixel_height_ from correct mode table
+ └─ Re-initializes width/height/pixel_width/pixel_height from correct mode table
     ADSD3100 → adsd3100_standardModes
     ADTF3066 → adtf3066_standardModes
 ```
@@ -303,7 +375,7 @@ main()
            │     │           device memory pool (8 blocks, uint16) for ADTFUnpackOp
            │     │
            │     ├─ Step 7: make_operator<ADTFUnpackOp>("ADIToF_data")
-           │     │           width=512, height=512, num_planes=3
+           │     │           width=get_pixel_width(), height=get_pixel_height(), num_planes=3
            │     │
            │     ├─ Step 8: make_operator<HolovizOp>("holoviz")
            │     │           Depth (left) / ActiveBrightness (center) / Conf (right)
@@ -375,7 +447,17 @@ This kernel right-shifts each 16-bit word by 8 bits (`>> 8`) and truncates to `u
 recovering the original raw bytes. Without this step the subsequent unpack kernel would
 read garbage.
 
-**`unpack_kernel`** — Demultiplex QMP v8.0.0+ two-subframe frame into 3 planes
+**`unpack_kernel`** — Demultiplex v8.1.0+ two-subframe frame into 3 planes (all modes)
+
+The same two-subframe layout applies to all capture modes — MP, QMP, VGA, and QVGA.
+`N = width × height` pixels; only the frame dimensions differ per mode:
+
+| Imager | Mode | Pixel dims (W × H) | N pixels | Total frame bytes (5 × N) |
+|--------|------|-------------------|----------|--------------------------|
+| ADSD3100 | 0, 1 (MP) | 1024 × 1024 | 1,048,576 | 5,242,880 |
+| ADSD3100 | 2, 3, 5, 6 (QMP) | 512 × 512 | 262,144 | 1,310,720 |
+| ADTF3066 | 0, 1, 7 (VGA) | 512 × 640 | 327,680 | 1,638,400 |
+| ADTF3066 | 3, 6, 8 (QVGA) | 256 × 320 | 81,920 | 409,600 |
 
 One CUDA thread per pixel reads from two subframe regions:
 
@@ -386,7 +468,7 @@ depth[idx] = raw[sf1_base] | (raw[sf1_base + 1] << 8)   // uint16 LE
 conf[idx]  = raw[sf1_base + 2]                           // uint8
 
 // Subframe 2: Active Brightness (2 bytes/pixel), after subframe 1
-sf2_base   = size * 3 + idx * 2
+sf2_base   = N * 3 + idx * 2
 ab[idx]    = raw[sf2_base] | (raw[sf2_base + 1] << 8)   // uint16 LE
 ```
 
@@ -397,17 +479,18 @@ Inputs/outputs (all device memory):
 - `ab`    — `uint16_t*` unpacked active brightness plane
 
 Output: three separate `uint16_t` device arrays (`depth[]`, `conf[]`, `ab[]`),
-each 512×512 — one value per pixel.
+each W×H — one value per pixel.
 
-> **Firmware v8.0.0+ — Changed frame layout (QMP mode)**
+> **Firmware v8.1.0+ — Two-subframe frame layout (all modes)**
 >
-> Starting with firmware v8.0.0 the frame is split into **two subframes** instead
-> of a single 5-byte/pixel interleaved stream:
+> Starting with firmware v8.1.0 the frame is split into **two subframes** instead
+> of a single 5-byte/pixel interleaved stream. The structure is identical for all
+> imager modes; only the pixel count N = W × H differs:
 >
 > | Subframe | Content | Bytes/pixel | Total bytes |
 > |----------|---------|-------------|-------------|
-> | 1 | Depth (16-bit) + Confidence (8-bit) interleaved per pixel | 3 | 3 × 512 × 512 |
-> | 2 | Active Brightness (16-bit) for all pixels | 2 | 2 × 512 × 512 |
+> | 1 | Depth (16-bit) + Confidence (8-bit) interleaved per pixel | 3 | 3 × N |
+> | 2 | Active Brightness (16-bit) for all pixels | 2 | 2 × N |
 >
 > Full stream layout:
 >
@@ -415,22 +498,22 @@ each 512×512 — one value per pixel.
 > ┌─────────────────────────────────────────────────────┐
 > │  Subframe 1 — Depth + Confidence (interleaved)      │
 > │  [ D1_L | D1_H | C1 | D2_L | D2_H | C2 | ... ]      │
-> │  3 bytes × (512 × 512) pixels                       │
+> │  3 bytes × N pixels  (N = W × H)                    │
 > ├─────────────────────────────────────────────────────┤
 > │  Subframe 2 — Active Brightness                     │
 > │  [ AB1_L | AB1_H | AB2_L | AB2_H | ... ]            │
-> │  2 bytes × (512 × 512) pixels                       │
+> │  2 bytes × N pixels                                 │
 > └─────────────────────────────────────────────────────┘
 > ```
 >
-> Per-pixel extraction (v8.0.0+):
+> Per-pixel extraction (v8.1.0+, all modes):
 > ```
 > depth[i] = subframe1[i*3 + 0] | (subframe1[i*3 + 1] << 8)  → uint16
 > conf[i]  = subframe1[i*3 + 2]                               → uint8
 > ab[i]    = subframe2[i*2 + 0] | (subframe2[i*2 + 1] << 8)  → uint16
 > ```
 >
-> The total frame size remains the same: 5 × 512 × 512 bytes.
+> The total frame size is always 5 × N bytes.
 > The 5 bytes per pixel are fully consumed — there are **no padding or don't-care bytes**:
 >
 > | Subframe | Bytes/pixel | Role | Running total |
@@ -440,7 +523,7 @@ each 512×512 — one value per pixel.
 > | **Total** | **5** | | **5 × N** |
 >
 > `3N + 2N = 5N` — the same total as the previous single-interleaved format.
-> `unpack_kernel` is updated to handle this two-subframe layout for v8.0.0+ firmware.
+> `unpack_kernel` handles this two-subframe layout for all modes (MP, QMP, VGA, QVGA).
 
 **`jet_kernel`** — Depth → false-color RGB (Jet colormap)
 
@@ -458,7 +541,7 @@ different normalization ranges:
 | Channel | `max_val` | Range | Reason |
 |---------|-----------|-------|---------|
 | Active Brightness | `4096.0` | 12-bit | AB is a 12-bit ADC value |
-| Confidence | `255.0` | 8-bit | Conf is a direct uint8 value (v8.0.0+ subframe 1) |
+| Confidence | `255.0` | 8-bit | Conf is a direct uint8 value (v8.1.0+ subframe 1) |
 
 ---
 
