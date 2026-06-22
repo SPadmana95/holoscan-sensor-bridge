@@ -141,7 +141,7 @@ constexpr uint16_t adcam_make_mode_settings(const AdcamModeConfig &cfg) {
 //   { mode_number, mipi_w, mipi_h,  px_w,  px_h,  phase_depth_bits, ab_bits, confidence_bits, ab_averaging, depth_enable, output_mipi }
 //
 // Mode types:
-//   MP  (Mega Pixel)       : 1024×1024 pixels, MIPI frame 3072×1707, requires 2 Gbps
+//   MP  (Mega Pixel)       : 1024×1024 pixels, MIPI frame 3072×1707, requires 1.5 Gbps
 //   QMP (Quarter Mega Pixel):  512×512  pixels, MIPI frame 2560×512,  requires 1 Gbps
 //
 // Frame layout (5 bytes/pixel):

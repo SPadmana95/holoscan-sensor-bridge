@@ -189,22 +189,37 @@ python3 examples/aditof/python/adcam_player.py --firmwareUpdate adi_manifest.yam
 
 ## Command-Line Options
 
+### Common options (C++ and Python)
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--resetAdcam <0\|1>` / `-r` | int | `0` | Full power-on reset sequence (power rails + GPIO) |
-| `--resetOnly <0\|1>` / `-RO` | int | `0` | GPIO-only soft reset (no power cycle) |
+| `--resetAdcam <0\|1>` | int | `0` | Full power-on reset sequence (power rails + GPIO); prints firmware versions after reset |
 | `--resetPin <0-31>` | int | `0` | GPIO pin number used for camera reset |
 | `--captureMode <n>` | int | `6` | Capture mode (0–9); valid modes depend on detected imager type |
-| `--capture <0\|1>` / `-c` | int | `0` | `1` = start capture pipeline, `2` = force stop streaming |
-| `--getStatus <0\|1>` / `-gs` | int | `0` | Read and log chip status registers |
+| `--capture <0\|1>` | int | `0` | `1` = start capture pipeline |
 | `--firmwareUpdate <file>` | string | — | Path to firmware manifest YAML |
-| `--force` | flag | off | Allow firmware downgrade (requires `--firmwareUpdate`) |
-| `--frame-limit <n>` | int | `300` | Stop after N frames (`None` = unlimited) |
-| `--ibv-name <dev>` | string | auto-detected | InfiniBand device name |
+| `--frame-limit <n>` | int | `300` | Stop after N frames (`0` = unlimited) |
+| `--ibv-name <dev>` | string | auto-detected | InfiniBand/network device name |
 | `--ibv-port <n>` | int | `1` | InfiniBand port number |
 | `--log-level <level>` | string | `info` | Log verbosity: `trace` `debug` `info` `warn` `error` |
-| `--verbose` / `-v` | flag | off | Enable verbose mode |
 | `-h`, `--help` | flag | — | Print usage |
+
+### C++ only options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--hololink <ip>` | string | `192.168.0.2` | Override HSB board IP address |
+| `--headless` | flag | off | Run without display window (no HolovizOp GUI) |
+| `--fullscreen` | flag | off | Run Holoviz in fullscreen mode |
+
+### Python only options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--resetOnly <0\|1>` / `-RO` | int | `0` | GPIO-only soft reset (no power cycle) |
+| `--getStatus <0\|1>` / `-gs` | int | `0` | Read and log chip status registers |
+| `--force` | flag | off | Allow firmware downgrade (requires `--firmwareUpdate`) |
+| `--verbose` / `-v` | flag | off | Enable verbose mode |
 
 **Capture mode → frame geometry and imager settings**
 
@@ -219,8 +234,8 @@ after the sensor is detected. Two tables are defined in `adcam_lib.hpp`:
 | 1 | 3072 | 1707 | 1024 × 1024 | MP | Native | Long |
 | 2 | 2560 | 512 | 512 × 512 | QMP | 2x2 analog | Short |
 | 3 | 2560 | 512 | 512 × 512 | QMP | 2x2 analog | Long |
-| 5 | 2560 | 512 | 512 × 512 | QMP | mixed bin | Very Long |
-| **6** (default) | **2560** | **512** | **512 × 512** | QMP | mixed bin | short |
+| 5 | 2560 | 512 | 512 × 512 | QMP | mixed bin | Long |
+| **6** (default) | **2560** | **512** | **512 × 512** | QMP | mixed bin | Short |
 
 All modes: `phase_depth_bits`=6 (16-bit), `ab_bits`=6 (16-bit), `confidence_bits`=2 (8-bit), `depth_enable`=1, `output_mipi`=2.
 MP modes require 1.5 Gbps MIPI; QMP modes require 1 Gbps MIPI.
@@ -233,8 +248,8 @@ MP modes require 1.5 Gbps MIPI; QMP modes require 1 Gbps MIPI.
 | 1 | 2560 | 640 | 512 × 640 | VGA | native | Long |
 | 7 | 2560 | 640 | 512 × 640 | VGA | native | Long |
 | 3 | 1280 | 320 | 256 × 320 | QVGA | 2x2 analog | Long |
-| **6** (default) | **1280** | **320** | **256 × 320** | QVGA | mixed bin | short |
-| 8 | 1280 | 320 | 256 × 320 | QVGA | mixed bin | Very Long |
+| **6** (default) | **1280** | **320** | **256 × 320** | QVGA | mixed bin | Short |
+| 8 | 1280 | 320 | 256 × 320 | QVGA | mixed bin | Long |
 
 All ADTF3066 modes: `phase_depth_bits`=6 (16-bit), `ab_bits`=6 (16-bit), `confidence_bits`=2 (8-bit), `ab_averaging`=1, `depth_enable`=1, `output_mipi`=2, 1 Gbps MIPI.
 
@@ -302,6 +317,12 @@ adcam_reset_power_on()
  ├─ expander0_.set_register() ×N      Power rail sequencing via I2C expanders
  ├─ configure_reset_high()            Release GPIO reset pin HIGH
  └─ sleep(5s)                         Wait for ADTF3175 boot
+
+// C++ player: immediately after reset, firmware versions are read and printed
+switch_from_standard_to_burst()
+get_fw_version_burst_mode(GET_MASTER_FIRMWARE_COMMAND)  → prints "Master Firmware version = X.Y.Z.W"
+get_fw_version_burst_mode(GET_SLAVE_FIRMWARE_COMMAND)   → prints "Slave Firmware version = X.Y.Z.W"
+switch_from_burst_to_standard()
 ```
 
 ### 3. Firmware Update (if `--firmwareUpdate <manifest>`)
@@ -716,8 +737,7 @@ The updater will:
 
 | Symptom | Likely Cause | Action |
 |---------|-------------|--------|
-| `ADTF3175 NOT Found` | Sensor not initialized or powered off | Run with `--resetAdcam 1` |
-| `[MASTER] Failed to read Chip ID` | I2C bus not responding | Check HSB network connection and sensor power |
+| `ADTF3175 NOT Found` | Sensor not initialized or powered off | Auto-reset is attempted once; if it persists, check sensor power and HSB connection |
 | No frames received | MIPI not streaming | Verify `--captureMode` and `--resetPin` values |
 | `Firmware flash failed` | Invalid binary or I2C error | Check manifest MD5/size and sensor power |
 | Black/frozen Holoviz window | CUDA or IBV issue | Check `--ibv-name` and CUDA device availability |
