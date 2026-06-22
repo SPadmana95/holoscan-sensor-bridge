@@ -489,16 +489,6 @@ int main(int argc, char** argv)
         auto hololink = hololink_channel->hololink();
         hololink->start();
 
-        if (0){
-            std::cout << "Doing GPIO profiling" << std::endl;
-             std::this_thread::sleep_for(std::chrono::seconds(20));
-            adcam_inst->profile_fpga_perf(6);
-            std::cout << "Doing GPIO profiling done" << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(20));
-            hololink->stop();
-            return EXIT_SUCCESS;
-        }
-        
         if (do_reset > 0)
         {
             adcam_inst->adcam_reset_power_on();
