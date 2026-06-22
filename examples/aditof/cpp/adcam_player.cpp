@@ -503,6 +503,21 @@ int main(int argc, char** argv)
         {
             adcam_inst->adcam_reset_power_on();
             //adcam_inst->adcam_hard_reset();
+
+            // Print master and slave firmware versions in a single burst session
+            adcam_inst->switch_from_standard_to_burst();
+            auto print_fw_version = [](const std::string& label, const std::vector<uint8_t>& resp) {
+                if (resp.size() >= 4) {
+                    std::cout << label << " Firmware version = "
+                              << (int)resp[0] << "." << (int)resp[1] << "."
+                              << (int)resp[2] << "." << (int)resp[3] << std::endl;
+                } else {
+                    std::cerr << label << " Firmware version: incomplete response" << std::endl;
+                }
+            };
+            print_fw_version("Master", adcam_inst->get_fw_version_burst_mode(GET_MASTER_FIRMWARE_COMMAND));
+            print_fw_version("Slave",  adcam_inst->get_fw_version_burst_mode(GET_SLAVE_FIRMWARE_COMMAND));
+            adcam_inst->switch_from_burst_to_standard();
         }
 
         if (!firmware_manifest.empty())
@@ -526,17 +541,16 @@ int main(int argc, char** argv)
             return EXIT_SUCCESS;
         }
                 
-        if (!adcam_inst->get_ChipID(GET_MASTER_CHIP_ID_CMD)) {
-            std::cerr << "[MASTER] Failed to read Chip ID" << std::endl;
+        if (!adcam_inst->probe_adcam_adtf3175()) {
+            std::cout << "ADTF3175 not responding; performing automatic power-on reset and retrying..." << std::endl;
+            adcam_inst->adcam_reset_power_on();
+            if (!adcam_inst->probe_adcam_adtf3175()) {
+                std::cerr << "No ADTF3175 found after reset, connect ADCAM and try again" << std::endl;
+                hololink->stop();
+                return EXIT_FAILURE;
+            }
         }
-
-        if (adcam_inst->probe_adcam_adtf3175()) {
-            std::cout << "ADTF3175 Found" << std::endl;
-        } else {
-            std::cout << "ADTF3175 NOT Found, reset and try again" << std::endl;
-            hololink->stop();
-            return EXIT_FAILURE;
-        }
+        std::cout << "ADTF3175 Found" << std::endl;
 
         adcam_inst->get_status();
         adcam_inst->get_imager_type_and_ccb_version();
