@@ -1196,14 +1196,15 @@ def main():
     hololink_module.logging_level(2)
     logging.info("Initializing.")
 
-    # Apply log level
+    # Apply log level — use hololink's logging_level() instead of basicConfig()
+    # to avoid overriding the hololink formatter that injects log_timestamp_s.
     _log_level_map = {
         "trace": logging.DEBUG, "debug": logging.DEBUG,
         "info": logging.INFO, "warn": logging.WARNING,
         "error": logging.ERROR, "critical": logging.CRITICAL,
     }
-    logging.basicConfig(
-        level=_log_level_map.get(args.log_level.lower(), logging.INFO)
+    logging.getLogger().setLevel(
+        _log_level_map.get(args.log_level.lower(), logging.INFO)
     )
 
     # Validate captureMode range
