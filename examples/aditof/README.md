@@ -9,7 +9,9 @@ Sensor Bridge (HSB).
 ## Table of Contents
 
 - [Overview](#overview)
+- [End-to-End Data Flow](#end-to-end-data-flow)
 - [Prerequisites](#prerequisites)
+- [Getting the Source](#getting-the-source)
 - [Build](#build)
 - [Usage](#usage)
 - [Command-Line Options](#command-line-options)
@@ -35,6 +37,122 @@ format, and displays three output planes side-by-side using Holoviz:
 
 ---
 
+## End-to-End Data Flow
+
+```
+[ ToF Sensor (ADSD3100 / ADTF3066) ]
+    │
+    │  Control: I2C
+    │    - Exposure / modulation / modes
+    │
+    │  Data: MIPI CSI-2 (RAW phase / amplitude)
+    ▼
+[ ADSD3500 Dual Depth Processor ]
+    │
+    │  Processing:
+    │   - Phase → Depth conversion
+    │   - Calibration
+    │   - Filtering / noise reduction
+    │
+    │  Output Streams:
+    │   - Depth (16-bit)
+    │   - Active Brightness (AB, 16-bit)
+    │   - Confidence (8-bit)
+    │
+    │  Interface:
+    │   - MIPI CSI-2 (processed frames)
+    ▼
+═══════════════════════════════════════
+[ HSB FPGA (Sensor Bridge) ]
+═══════════════════════════════════════
+    │
+    │  1. MIPI RX (CSI-2 Capture)
+    │     - Lane alignment
+    │     - Frame/line decoding
+    │
+    │  2. Frame Assembly
+    │     - Line buffers → complete frame
+    │     - MIPI line synchronization
+    │
+    │  3. Packetization
+    │     - Frame → UDP packets
+    │     - Header fields added:
+    │         • Frame ID
+    │         • Packet sequence #
+    │         • Stream ID (frame stream)
+    │         • Timestamp
+    │
+    │  4. Ethernet Transmission
+    │     - 10/25GbE MAC → PHY
+    │     - Optical module (SFP+/QSFP)
+    │     - Jumbo frames (~9000 MTU)
+    │
+    │  5. Control Plane (Parallel)
+    │     - I2C tunneling from host → sensor
+    ▼
+═══════════════════════════════════════
+🔗 Direct Optical Ethernet Link
+(HSB ↔ AGX Thor / IGX Orin)
+═══════════════════════════════════════
+    │
+    │  Key Characteristics:
+    │   - Point-to-point (no switch)
+    │   - Very low latency
+    │   - No routing / minimal packet loss (if tuned)
+    │
+    ▼
+[ NVIDIA Host NIC (Thor / IGX Orin) ]
+    │
+    │  Hardware Layer:
+    │   - RX queues (RSS / multi-queue)
+    │   - Ring buffers
+    │   - Interrupt moderation
+    │
+    │  Data Path Options:
+    │   (A) UDP Socket → CPU → GPU
+    │   (B) RDMA / GPUDirect → GPU (preferred)
+    ▼
+═══════════════════════════════════════
+[ Holoscan Sensor Bridge Receiver Operator ]
+═══════════════════════════════════════
+    │
+    │  1. Packet Receive
+    │     - Pull from NIC (socket or RDMA)
+    │
+    │  2. Packet Handling
+    │     - Sequence validation
+    │     - Reordering
+    │     - Loss detection
+    │
+    │  3. Frame Reassembly
+    │     - Packets → full image
+    │     - Frame completeness check
+    │
+    │  4. Memory Placement
+    │     - Pinned host memory OR
+    │     - Direct GPU buffer (GPUDirect)
+    ▼
+═══════════════════════════════════════
+🧠 Holoscan Application (ADCAM Player App)
+═══════════════════════════════════════
+    │
+    │  Pipeline Graph:
+    │
+    │   RoceReceiverOp / LinuxReceiverOp
+    │        ↓
+    │   CsiToBayerOp
+    │        ↓
+    │   ADTFUnpackOp  (GPU: unpack + colorize)
+    │        ↓
+    │   HolovizOp
+    ▼
+[ Final Output ]
+    - Holoviz display (Depth / ActiveBrightness / Confidence)
+    - Saved frames
+```
+
+---
+
 ## Prerequisites
 
 - NVIDIA Holoscan SDK
@@ -45,13 +163,27 @@ format, and displays three output planes side-by-side using Holoviz:
 
 ---
 
-## Build
-
-### 1. Start the demo container (from the repo root on the devkit)
+## Getting the Source
 
 ```bash
+git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
 cd holoscan-sensor-bridge
-sh docker/demo.sh
+```
+
+---
+
+## Build
+
+### 1. Build the container and start it (from the repo root on the devkit)
+
+```bash
+sh ./docker/build.sh
+
+export DISPLAY=$DISPLAY
+
+xhost +
+
+sh ./docker/demo.sh
 ```
 
 ### 2. Inside the container — configure
@@ -219,7 +351,6 @@ python3 examples/aditof/python/adcam_player.py --firmwareUpdate adi_manifest.yam
 | `--resetOnly <0\|1>` / `-RO` | int | `0` | GPIO-only soft reset (no power cycle) |
 | `--getStatus <0\|1>` / `-gs` | int | `0` | Read and log chip status registers |
 | `--force` | flag | off | Allow firmware downgrade (requires `--firmwareUpdate`) |
-| `--verbose` / `-v` | flag | off | Enable verbose mode |
 
 **Capture mode → frame geometry and imager settings**
 
