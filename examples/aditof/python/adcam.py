@@ -1173,25 +1173,24 @@ class adcam:
         print(f"[INFO] Master Chip ID is: 0x{master_chip_id:04X}")
 
         # --- Probe slave device (optional) ---
+        # NOTE: Reading slave chip ID (0x0116) directly causes I2C NAK and
+        # leaves the bus disturbed, making the subsequent 0x005A query also
+        # fail. This matches the C++ adsd3500_flash.cpp behaviour where the
+        # slave chip ID probe is commented out (marked "for debugging").
+        # Instead, query 0x005A (GET_DUAL_ADSD3500_ENABLED_CMD) directly via
+        # the master — this is the reliable way to detect dual configuration.
         slave_found = False
-        slave_resp = self.set_register16_response(GET_SLAVE_CHIP_ID_CMD, 2)
-        if slave_resp is not None and len(slave_resp) >= 2:
-            slave_chip_id = (slave_resp[0] << 8) | slave_resp[1]
-            print(f"[INFO] Slave Chip ID is: 0x{slave_chip_id:04X}")
-            slave_found = True
-        else:
-            dual_resp = self.set_register16_response(GET_DUAL_ADSD3500_ENABLED_CMD, 2)
-            if dual_resp is not None and len(dual_resp) >= 2:
-                dual_enabled = (dual_resp[0] << 8) | dual_resp[1]
-                print(f"[INFO] Get Is Dual ADSD3500 Enabled (0x005A): 0x{dual_enabled:04X}")
-                if dual_enabled == ENABLE_VAL:
-                    print("[INFO] Dual ADSD3500 is enabled. Slave confirmed via master query.")
-                    slave_found = True
-                else:
-                    print("[INFO] Dual ADSD3500 disabled. Single-device configuration.")
+        dual_resp = self.set_register16_response(GET_DUAL_ADSD3500_ENABLED_CMD, 2)
+        if dual_resp is not None and len(dual_resp) >= 2:
+            dual_enabled = (dual_resp[0] << 8) | dual_resp[1]
+            print(f"[INFO] Get Is Dual ADSD3500 Enabled (0x005A): 0x{dual_enabled:04X}")
+            if dual_enabled == ENABLE_VAL:
+                print("[INFO] Dual ADSD3500 is enabled. Slave confirmed via master query.")
+                slave_found = True
             else:
-                print("[INFO] Slave chip ID read failed; dual-enable query also failed.")
-                print("[INFO] Assuming single-device configuration.")
+                print("[INFO] Dual ADSD3500 disabled. Single-device configuration.")
+        else:
+            print("[INFO] Dual-enable query (0x005A) failed. Assuming single-device configuration.")
 
         # --- Execute update(s) ---
         if slave_found:
