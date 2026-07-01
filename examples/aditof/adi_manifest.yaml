@@ -1,12 +1,12 @@
 hololink:
   archive:
     version: 1.0.0
-    enrollment_date: '2026-06-18T10:48:03.170485+00:00'
+    enrollment_date: '2026-07-01T08:42:22.197838+00:00'
   content:
     ADCAM_Fw_Dual_Update_8.1.0.bin:
       url: https://swdownloads.analog.com/cse/aditof/aware3d/ADCAM/1.0.0/ADCAM_Fw_Dual_Update_8.1.0.bin
       size: 262144
-      md5: cf94ea9ae997fa7e50b393114939c196
+      md5: 5a1c072dfaf57284a33123b53f5c0982
     ADI_Software_License_Agreement.txt:
       url: https://swdownloads.analog.com/cse/aditof/aware3d/ADCAM/1.0.0/ADI_Software_License_Agreement.txt
       size: 758
